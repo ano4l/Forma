@@ -1,10 +1,10 @@
-# Moneyfy implementation progress
+# Forma implementation progress
 
-Last updated: 2026-07-12
+Last updated: 2026-07-19
 
 ## Current milestone
 
-Moneyfy is now a working local-first receivables workspace, not a static invoice mockup. It supports invoices, quotes, and receipts through one durable SQLite document ledger with PDF output, lifecycle controls, configurable identity, reusable templates, and a responsive application shell.
+Forma is now a working local-first receivables workspace, not a static invoice mockup. It supports invoices, quotes, and receipts through one durable SQLite document ledger with PDF output, lifecycle controls, configurable identity, reusable templates, and a responsive application shell.
 
 - Shared-document workflow milestone: approximately 90% complete.
 - Full hosted production SaaS brief: approximately 59% complete.
@@ -54,6 +54,8 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Express JSON API and durable local SQLite database with a legacy-invoice migration path.
 - PDFKit PDF generation for every document type, five templates, A4/Letter, and multi-page output with selectable text.
 - Tests for money calculations, per-rate tax breakdowns, persistence, immutable snapshots, readiness, audit events, legacy migration, independent numbering, quote conversion, partial payments/receipts, payment masking, parser behavior, template/PDF combinations, and idempotent mock sends.
+- Branding release pass: the Forma logo is a tracked browser asset, generated PDFs resolve the document's managed PNG/JPEG logo or a safe inline PNG/JPEG and fall back to the packaged Forma logo, and email attachments use the same resolver. Automated coverage proves browser asset rendering, custom-logo embedding in PDF output, and lossless migration of the legacy default business identity.
+- `FORMA_DB`, `FORMA_UPLOAD_DIR`, and `FORMA_*` email configuration names are now preferred while the matching legacy `MONEYFY_*` names remain supported for existing deployments.
 
 ## Partially complete
 
@@ -86,7 +88,7 @@ npm test
 $env:PORT='4175'; npm start
 ```
 
-Latest verified result: `19` automated tests passed, `0` failed. `node --check app.js`, `node --check db.js`, `node --check server.js`, and `node --check email.js` also passed.
+Latest verified result (2026-07-19): `20` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. The suite now also verifies the Forma browser logo route, custom uploaded-logo embedding in generated PDFs, and preservation of custom profile fields during the legacy branding migration.
 
 Live local verification was completed at `http://127.0.0.1:4179`:
 
@@ -110,7 +112,7 @@ Live local verification was completed at `http://127.0.0.1:4179`:
 ## Next priorities
 
 1. Consolidate the generic quote/invoice/receipt editor so it has the same customer picker, product picker, terms, payment selection, notes, and attachment ergonomics as the invoice composer.
-2. Add real authentication, workspaces, and tenant-safe persistence before exposing this outside a trusted local environment.
-3. Replace mock delivery with a provider adapter, verified-domain configuration, delivery/bounce webhooks, background reminder execution, and test-mode safeguards.
-4. Add secure binary upload/object storage for logos and attachments.
-5. Implement payment collection, exports/reporting, production security controls, and deployment observability.
+2. Add Supabase Auth, workspaces, roles, tenant-safe Postgres persistence, private Storage buckets, and RLS before exposing the service outside a trusted local environment.
+3. Complete Resend production delivery with verified-domain configuration, webhook processing, retries, bounce handling, and scheduled reminder execution.
+4. Add Stripe and PayPal payment links, provider webhooks, reconciliation, and a customer payment portal.
+5. Add CI, deployment environments, monitoring, rate limits, audit retention/recovery, tax exports, analytics, and formal CSV/PDF reports.

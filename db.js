@@ -14,7 +14,7 @@ const STATUS = {
   receipt: ["draft", "issued", "void"]
 };
 const DEFAULT_PROFILE = {
-  name: "Moneyfy Studio", email: "billing@moneyfy.co.za", address: "88 Bree Street, Cape Town, 8001",
+  name: "Forma Studio", email: "billing@forma.co.za", address: "88 Bree Street, Cape Town, 8001",
   vat_registered: true, vat_number: "4123456789", default_currency: "ZAR", default_terms_days: 30
 };
 const DEFAULT_PREFIXES = { invoice: "INV", quote: "QUO", receipt: "REC" };
@@ -291,7 +291,7 @@ export function createStore(filename = "moneyfy.sqlite") {
     } catch (cause) { db.exec("ROLLBACK"); throw cause; }
     return emailAttempt(db.prepare("SELECT * FROM email_delivery_attempts WHERE id=?").get(attemptId));
   }
-  function sendDocument(id, input = {}) { const started = beginDocumentEmail(id, input, process.env.MONEYFY_EMAIL_PROVIDER || "mock"); if (started.idempotent) return started.attempt; return completeDocumentEmail(id, started.attempt.id, { accepted: true, status: "accepted_mock" }); }
+  function sendDocument(id, input = {}) { const started = beginDocumentEmail(id, input, process.env.FORMA_EMAIL_PROVIDER || process.env.MONEYFY_EMAIL_PROVIDER || "mock"); if (started.idempotent) return started.attempt; return completeDocumentEmail(id, started.attempt.id, { accepted: true, status: "accepted_mock" }); }
   function listEmailHistory(id) { return db.prepare("SELECT * FROM email_delivery_attempts WHERE document_id=? ORDER BY created_at DESC").all(id).map((row) => emailAttempt(row)); }
   function listAudit(id) { const fresh = db.prepare("SELECT id,type,detail_json,created_at FROM document_audit_events WHERE document_id=? ORDER BY id").all(id).map((row) => ({ ...row, detail: json(row.detail_json) })); const legacy = db.prepare("SELECT id,type,detail_json,created_at FROM audit_events WHERE invoice_id=? ORDER BY id").all(id).map((row) => ({ ...row, detail: json(row.detail_json) })); return [...legacy, ...fresh].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id); }
 
@@ -449,7 +449,16 @@ export function createStore(filename = "moneyfy.sqlite") {
   function saveProduct(input, id = randomUUID()) { if (!input.name) throw error("Product name is required"); asMinor(input.unit_price_minor || 0, "unit_price_minor"); const timestamp = now(); db.prepare("INSERT INTO products(id,name,description,unit_price_minor,tax_bps,currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,unit_price_minor=excluded.unit_price_minor,tax_bps=excluded.tax_bps,currency=excluded.currency,updated_at=excluded.updated_at").run(id, input.name, input.description || "", Math.round(Number(input.unit_price_minor) || 0), Math.round(Number(input.tax_bps) || 0), input.currency || "ZAR", timestamp, timestamp); return db.prepare("SELECT * FROM products WHERE id=?").get(id); }
 
   function seed() {
-    if (!getSetting("business_profile", null)) saveBusinessProfile(DEFAULT_PROFILE); if (!db.prepare("SELECT COUNT(*) AS count FROM branding_presets").get().count) saveBrandingPreset({ id: "default", name: "Moneyfy default", template_id: "classic", accent: "#7f56d9" }); for (const template of Object.values(DEFAULT_EMAIL_TEMPLATES)) if (!db.prepare("SELECT purpose FROM email_templates WHERE purpose=?").get(template.purpose)) saveEmailTemplate(template);
+    let profileSetting = getSetting("business_profile", null);
+    if (!profileSetting) {
+      saveBusinessProfile(DEFAULT_PROFILE);
+    } else if (profileSetting.name === "Moneyfy Studio") {
+      const migratedProfile = { ...profileSetting, name: "Forma Studio" };
+      if (migratedProfile.email === "billing@moneyfy.co.za") migratedProfile.email = "billing@forma.co.za";
+      saveBusinessProfile(migratedProfile);
+    }
+    if (!db.prepare("SELECT COUNT(*) AS count FROM branding_presets").get().count) saveBrandingPreset({ id: "default", name: "Forma default", template_id: "classic", accent: "#7f56d9" });
+    for (const template of Object.values(DEFAULT_EMAIL_TEMPLATES)) if (!db.prepare("SELECT purpose FROM email_templates WHERE purpose=?").get(template.purpose)) saveEmailTemplate(template);
     for (const rule of DEFAULT_REMINDER_RULES) if (!db.prepare("SELECT id FROM reminder_rules WHERE id=?").get(rule.id)) saveReminderRule({ label: rule.label, offset_days: rule.offset_days, purpose: rule.purpose, active: rule.active }, rule.id);
     if (db.prepare("SELECT COUNT(*) AS count FROM customers").get().count) return;
     const timestamp = now(); const customers = [["vertex", "Vertex Labs", "finance@vertexlabs.co.za", "12 Loop Street, Cape Town, 8001", "South Africa", "4780123456", 1, "ZAR", 30], ["acme", "Acme Enterprise", "accounts@acme.co.za", "44 Oxford Road, Rosebank, Johannesburg, 2196", "South Africa", "", 0, "ZAR", 14], ["northstar", "Northstar Capital", "ap@northstar.com", "401 Bay Street, Toronto, ON", "Canada", "", 0, "USD", 30]]; const insertCustomer = db.prepare("INSERT INTO customers(id,name,email,address,country,vat_number,vat_registered,currency,terms_days,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)"); customers.forEach((row) => insertCustomer.run(...row, timestamp, timestamp)); const products = [["strategy", "Finance systems advisory", "Discovery and finance workflow design", 185000, 1500, "ZAR"], ["automation", "Invoice automation setup", "Implementation and workflow automation", 420000, 1500, "ZAR"], ["retainer", "Operations retainer", "Monthly finance operations support", 240000, 1500, "ZAR"]]; const insertProduct = db.prepare("INSERT INTO products(id,name,description,unit_price_minor,tax_bps,currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)"); products.forEach((row) => insertProduct.run(...row, timestamp, timestamp)); const customer = getCustomer("vertex"); createDraft({ customer_id: customer.id, customer, terms_days: customer.terms_days, items: [{ product_id: "strategy", description: "Finance systems advisory", quantity: 1, unit_price_minor: 185000, tax_bps: 1500, discount_bps: 0 }, { product_id: "automation", description: "Invoice automation setup", quantity: 1, unit_price_minor: 420000, tax_bps: 1500, discount_bps: 0 }] });

@@ -10,6 +10,7 @@ import { listTemplates } from "./templates.js";
 import { emailProviderStatus, sendTransactionalEmail } from "./email-provider.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_BRAND_LOGO = "VKT-logo.png";
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const safeFilename = (value = "logo") => path.basename(String(value)).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 100) || "logo";
@@ -43,20 +44,40 @@ function attachmentInfo(buffer, contentType) {
   return imageInfo(buffer, contentType);
 }
 
-export function createApp({ database = process.env.MONEYFY_DB || path.join(root, "moneyfy.sqlite"), uploadDir = process.env.MONEYFY_UPLOAD_DIR || path.join(root, "uploads"), staticRoot = root } = {}) {
+export function createApp({ database = process.env.FORMA_DB || process.env.MONEYFY_DB || path.join(root, "moneyfy.sqlite"), uploadDir = process.env.FORMA_UPLOAD_DIR || process.env.MONEYFY_UPLOAD_DIR || path.join(root, "uploads"), staticRoot = root } = {}) {
   const app = express();
   const store = createStore(database);
   app.locals.store = store;
   app.use(express.json({ limit: "1mb" }));
   const route = (handler) => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
   const found = (document, label = "Document") => { if (!document) throw Object.assign(new Error(`${label} not found`), { status: 404, code: "NOT_FOUND" }); return document; };
+  const safeAssetPath = (asset) => {
+    const target = path.resolve(uploadDir, asset.storage_key);
+    if (!target.startsWith(path.resolve(uploadDir) + path.sep)) throw Object.assign(new Error("Asset path is invalid"), { status: 500, code: "INTERNAL_ERROR" });
+    return target;
+  };
+  async function pdfLogoFor(document) {
+    const data = document.snapshot || document.data || {};
+    const logoUrl = String(data.supplier?.logo_url || "").trim();
+    const managedAsset = logoUrl.match(/^\/api\/assets\/([0-9a-f-]+)$/i);
+    if (managedAsset) {
+      const asset = store.getMediaAsset(managedAsset[1]);
+      if (asset && ["image/png", "image/jpeg"].includes(asset.content_type)) return readFile(safeAssetPath(asset)).catch(() => null);
+    }
+    if (/^data:image\/(?:png|jpeg);base64,/i.test(logoUrl)) {
+      const encoded = logoUrl.slice(logoUrl.indexOf(",") + 1);
+      const buffer = Buffer.from(encoded, "base64");
+      if (buffer.length && buffer.length <= MAX_LOGO_BYTES) return buffer;
+    }
+    return readFile(path.join(staticRoot, DEFAULT_BRAND_LOGO)).catch(() => null);
+  }
   async function sendDocumentEmail(documentId, input = {}) {
     const provider = emailProviderStatus();
     const started = store.beginDocumentEmail(documentId, input, provider.provider);
     if (started.idempotent) return started.attempt;
     let delivery;
     try {
-      const pdf = await renderDocumentPdf(started.document);
+      const pdf = await renderDocumentPdf(started.document, { logo: await pdfLogoFor(started.document) });
       delivery = await sendTransactionalEmail({ ...started.attempt.rendered, requestKey: started.attempt.request_key, attachment: { filename: `${started.document.number}.pdf`, content: pdf } });
     } catch {
       delivery = { accepted: false, status: "provider_error", error: "Could not prepare the document email" };
@@ -78,7 +99,7 @@ export function createApp({ database = process.env.MONEYFY_DB || path.join(root,
   }));
   app.get("/api/assets/:id", route(async (req, res) => {
     const asset = store.getMediaAsset(req.params.id); if (!asset) throw Object.assign(new Error("Asset not found"), { status: 404, code: "NOT_FOUND" });
-    const target = path.resolve(uploadDir, asset.storage_key); if (!target.startsWith(path.resolve(uploadDir) + path.sep)) throw Object.assign(new Error("Asset path is invalid"), { status: 500, code: "INTERNAL_ERROR" });
+    const target = safeAssetPath(asset);
     const content = await readFile(target).catch(() => null); if (!content) throw Object.assign(new Error("Asset data not found"), { status: 404, code: "NOT_FOUND" });
     res.type(asset.content_type).set("Cache-Control", "private, max-age=86400").send(content);
   }));
@@ -119,7 +140,7 @@ export function createApp({ database = process.env.MONEYFY_DB || path.join(root,
   }));
   app.get("/api/exports/receivables.csv", route((req, res) => {
     const documents = store.listDocuments({ document_type: req.query.document_type || undefined, status: req.query.status || undefined });
-    res.type("text/csv").attachment(`moneyfy-receivables-${new Date().toISOString().slice(0, 10)}.csv`).send(receivablesCsv(documents));
+    res.type("text/csv").attachment(`forma-receivables-${new Date().toISOString().slice(0, 10)}.csv`).send(receivablesCsv(documents));
   }));
   app.get("/api/documents", route((req, res) => res.json({ data: store.listDocuments({ document_type: req.query.document_type || req.query.type, status: req.query.status }) })));
   app.post("/api/documents", route((req, res) => res.status(201).json({ data: store.createDocument(req.body || {}) })));
@@ -153,7 +174,7 @@ export function createApp({ database = process.env.MONEYFY_DB || path.join(root,
   app.get("/api/documents/:id/payments", route((req, res) => { found(store.getDocument(req.params.id)); res.json({ data: store.listPayments(req.params.id) }); }));
   app.post("/api/documents/:id/void", route((req, res) => res.json({ data: store.transitionDocument(req.params.id, "void", "voided") })));
   app.get("/api/documents/:id/audit", route((req, res) => { found(store.getDocument(req.params.id)); res.json({ data: store.listAudit(req.params.id) }); }));
-  app.get("/api/documents/:id/pdf", route((req, res) => createDocumentPdf(found(store.getDocument(req.params.id, { sensitive: true })), res)));
+  app.get("/api/documents/:id/pdf", route(async (req, res) => { const document = found(store.getDocument(req.params.id, { sensitive: true })); createDocumentPdf(document, res, { logo: await pdfLogoFor(document) }); }));
   app.post("/api/documents/:id/email-drafts", route((req, res) => res.json({ data: store.createEmailDraft(req.params.id, req.body || {}) })));
   app.post("/api/documents/:id/send", route(async (req, res) => {
     const attempt = await sendDocumentEmail(req.params.id, req.body || {});
@@ -194,7 +215,7 @@ export function createApp({ database = process.env.MONEYFY_DB || path.join(root,
   app.post("/api/invoices/:id/void", route((req, res) => res.json({ data: store.transition(req.params.id, "void", ["finalized", "sent"], "voided") })));
   app.post("/api/invoices/:id/duplicate", route((req, res) => res.status(201).json({ data: store.duplicate(req.params.id) })));
   app.get("/api/invoices/:id/audit", route((req, res) => { found(store.getInvoice(req.params.id), "Invoice"); res.json({ data: store.listAudit(req.params.id) }); }));
-  app.get("/api/invoices/:id/pdf", route((req, res) => createDocumentPdf(found(store.getInvoice(req.params.id), "Invoice"), res)));
+  app.get("/api/invoices/:id/pdf", route(async (req, res) => { const document = found(store.getInvoice(req.params.id), "Invoice"); createDocumentPdf(document, res, { logo: await pdfLogoFor(document) }); }));
 
   app.use(express.static(staticRoot, { extensions: ["html"] }));
   app.get("/{*splat}", (req, res) => res.sendFile(path.join(staticRoot, "index.html")));
@@ -204,5 +225,5 @@ export function createApp({ database = process.env.MONEYFY_DB || path.join(root,
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 4173;
-  createApp().listen(port, "127.0.0.1", () => console.log(`Moneyfy running at http://127.0.0.1:${port}`));
+  createApp().listen(port, "127.0.0.1", () => console.log(`VirtuKey Forma running at http://127.0.0.1:${port}`));
 }

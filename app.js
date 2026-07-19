@@ -62,7 +62,7 @@ function renderNav() {
     return `${heading}<button class="nav-item ${state.route === id ? "active" : ""}" data-route="${id}">${icon(glyph)}${label}${count}</button>`;
   }).join("");
   const current = routes.find(([id]) => id === state.route) || (state.route === "document-editor" ? ["document-editor", "file", "Documents"] : routes[0]);
-  $("#crumbs").innerHTML = `<span>Moneyfy</span>${icon("chevron")}<b>${current[2]}</b>`;
+  $("#crumbs").innerHTML = `<span>Forma</span>${icon("chevron")}<b>${current[2]}</b>`;
 }
 
 function pageHead(eyebrow, title, lead, actions = "") { return `<div class="page-head"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${lead}</p></div><div class="head-actions">${actions}</div></div>`; }
@@ -176,7 +176,11 @@ function readinessMarkup(checks, done) { const ready = done === checks.length; r
 function paperMarkup(data, totals) {
   const customer = data.customer || {};
   const supplier = data.supplier || {};
-  return `<div class="paper-head"><span class="paper-logo">M</span><div class="paper-brand"><strong>${escapeHtml(supplier.name || "Your company")}</strong>${escapeHtml(supplier.address || "Add your business address")}<br>${supplier.vat_number ? `VAT ${escapeHtml(supplier.vat_number)}` : ""}</div></div>
+  const logoUrl = String(supplier.logo_url || state.profile.logo_url || "/VKT-logo.png").trim();
+  const logoMarkup = logoUrl && /^(https?:\/\/|data:image\/|\/)/i.test(logoUrl)
+    ? `<img src="${escapeHtml(logoUrl)}" alt="" class="paper-logo-image" style="height:100%; width:100%; object-fit:contain;">`
+    : escapeHtml((supplier.name || "F").slice(0, 1).toUpperCase());
+  return `<div class="paper-head"><span class="paper-logo" style="display:flex;align-items:center;justify-content:center;overflow:hidden;padding:2px;">${logoMarkup}</span><div class="paper-brand"><strong>${escapeHtml(supplier.name || "Your company")}</strong>${escapeHtml(supplier.address || "Add your business address")}<br>${supplier.vat_number ? `VAT ${escapeHtml(supplier.vat_number)}` : ""}</div></div>
     <h3>${escapeHtml(data.document_title || "Invoice")}</h3><span class="paper-number">${escapeHtml(data.number || "Draft")}</span>
     <div class="paper-meta"><div><span class="paper-label">Billed to</span><div class="paper-value">${escapeHtml(customer.name || "Choose a customer")}<br>${escapeHtml(customer.address || "")}</div></div><div><span class="paper-label">Issued</span><div class="paper-value">${dateLabel(data.issue_date)}</div></div><div><span class="paper-label">Due</span><div class="paper-value">${dateLabel(data.due_date)}</div></div></div>
     <div class="paper-table"><div class="paper-row head"><span>Description</span><span>Qty</span><span>Rate</span><span>Total</span></div>${totals.lines.length ? totals.lines.map((item) => `<div class="paper-row"><span>${escapeHtml(item.description || "Untitled item")}</span><span>${item.quantity}</span><span>${money(item.unit_price_minor, data.currency)}</span><span>${money(item.total_minor, data.currency)}</span></div>`).join("") : `<div class="paper-row"><span>No line items yet</span><span>-</span><span>-</span><span>-</span></div>`}</div>
@@ -253,8 +257,8 @@ function genericPaperMarkup(document) {
   const totals = genericTotals(data);
   const label = documentTypeLabel(document.document_type);
   const dateLabelText = document.document_type === "quote" ? "Valid until" : document.document_type === "receipt" ? "Payment date" : "Due date";
-  const logoUrl = String(data.supplier?.logo_url || state.profile.logo_url || "").trim();
-  const mark = logoUrl && /^(https?:\/\/|data:image\/)/i.test(logoUrl) ? `<img class="generic-paper-logo-image" src="${escapeHtml(logoUrl)}" alt="">` : escapeHtml((data.supplier?.name || "M").slice(0, 1));
+  const logoUrl = String(data.supplier?.logo_url || state.profile.logo_url || "/VKT-logo.png").trim();
+  const mark = logoUrl && /^(https?:\/\/|data:image\/|\/)/i.test(logoUrl) ? `<img class="generic-paper-logo-image" src="${escapeHtml(logoUrl)}" alt="">` : escapeHtml((data.supplier?.name || "F").slice(0, 1));
   return `<div class="generic-paper template-${escapeHtml(template.id)}" style="--document-accent:${escapeHtml(data.accent || template.accent || "#7f56d9")}">
     <div class="generic-paper-head"><div class="generic-paper-mark">${mark}</div><div><span class="generic-eyebrow">${label}</span><h3>${escapeHtml(data.document_title || label)}</h3><small>${escapeHtml(data.number || document.number)}</small></div><div class="generic-paper-business"><strong>${escapeHtml(data.supplier?.name || state.profile.name || "Business name")}</strong><span>${escapeHtml(data.supplier?.address || state.profile.address || "")}</span></div></div>
     <div class="generic-paper-meta"><div><span>Bill to</span><strong>${escapeHtml(data.customer?.name || "Choose a client")}</strong><small>${escapeHtml(data.customer?.email || data.customer?.address || "")}</small></div><div><span>Issued</span><strong>${escapeHtml(data.issue_date || "-")}</strong></div><div><span>${dateLabelText}</span><strong>${escapeHtml(document.document_type === "receipt" ? data.issue_date || "-" : data.due_date || data.expiry_date || "-")}</strong></div></div>
@@ -367,7 +371,7 @@ function renderSettings() {
     <section class="panel settings-panel"><div class="settings-panel-head"><div><h2>Document numbering</h2><p class="panel-sub">Prefixes are independent for invoices, quotes, and receipts.</p></div><span class="settings-kicker">Controls</span></div><div class="field-grid prefix-grid">${simpleInput("Invoice prefix", "prefixInvoice", state.numberPrefixes.invoice || "INV", "text")}${simpleInput("Quote prefix", "prefixQuote", state.numberPrefixes.quote || "QUO", "text")}${simpleInput("Receipt prefix", "prefixReceipt", state.numberPrefixes.receipt || "REC", "text")}</div><div class="modal-actions"><button class="btn" data-save-prefixes>${icon("check")}Save numbering</button></div></section>
     <section class="panel settings-email settings-panel"><div class="settings-panel-head"><div><h2>Email templates</h2><p class="panel-sub">Templates produce the default subject and message for mock delivery.</p></div><span class="settings-kicker">Delivery</span></div>${state.emailTemplates.length ? `<div class="field"><label for="emailTemplatePurpose">Message type</label><div class="input-wrap"><select id="emailTemplatePurpose">${state.emailTemplates.map((template) => `<option value="${escapeHtml(template.purpose)}" ${template.purpose === selectedPurpose ? "selected" : ""}>${escapeHtml(template.purpose.replaceAll("_", " "))}</option>`).join("")}</select></div></div>${simpleInput("Subject", "emailTemplateSubject", selectedTemplate.subject || "", "text")}<div class="field"><label for="emailTemplateText">Plain text body</label><div class="input-wrap textarea-wrap"><textarea id="emailTemplateText" rows="6">${escapeHtml(selectedTemplate.text || selectedTemplate.body || "")}</textarea></div></div><div class="modal-actions"><button class="btn" data-save-email-template>${icon("check")}Save email template</button></div>` : `<p class="panel-sub">No templates returned yet.</p>`}</section></div></div>`;
 }
-function renderGeneric(title) { return `<div class="page">${pageHead("Moneyfy",title,"This workspace uses the same durable local ledger as the invoice workflow.")}<section class="panel"><h2>${title} workspace</h2><p class="panel-sub">Configuration is stored locally. Invoice generation, customers, products, lifecycle actions and PDFs are fully active.</p></section></div>`; }
+function renderGeneric(title) { return `<div class="page">${pageHead("Forma",title,"This workspace uses the same durable local ledger as the invoice workflow.")}<section class="panel"><h2>${title} workspace</h2><p class="panel-sub">Configuration is stored locally. Invoice generation, customers, products, lifecycle actions and PDFs are fully active.</p></section></div>`; }
 
 function render() {
   renderNav();
@@ -883,7 +887,7 @@ async function bootstrap() {
     resetSaveRevision();
     await loadAudit(state.current.id);
     render();
-  } catch (error) { $("#content").innerHTML = `<div class="error-state"><div><h2>Could not open Moneyfy</h2><p>${escapeHtml(error.message)}</p><button class="btn primary" onclick="location.reload()">Try again</button></div></div>`; }
+  } catch (error) { $("#content").innerHTML = `<div class="error-state"><div><h2>Could not open VirtuKey Forma</h2><p>${escapeHtml(error.message)}</p><button class="btn primary" onclick="location.reload()">Try again</button></div></div>`; }
 }
 
 $("#menuBtn").onclick = () => { $("#sidebar").classList.add("open"); $("#scrim").classList.add("show"); };

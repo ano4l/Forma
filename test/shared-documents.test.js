@@ -171,6 +171,18 @@ test("business settings persist and payment method list masks accounts", () => {
   } finally { dispose(box); }
 });
 
+test("legacy Moneyfy business identity migrates without replacing custom profile fields", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "forma-branding-migration-"));
+  const database = path.join(dir, "test.sqlite");
+  let store = createStore(database);
+  store.setting("business_profile", { name: "Moneyfy Studio", email: "billing@moneyfy.co.za", address: "Custom address", custom_field: "preserved" });
+  store.close();
+  store = createStore(database);
+  try {
+    assert.deepEqual(store.getBusinessProfile(), { name: "Forma Studio", email: "billing@forma.co.za", address: "Custom address", custom_field: "preserved", vat_registered: true, vat_number: "4123456789", default_currency: "ZAR", default_terms_days: 30 });
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("parser is deterministic for invoice, quote, receipt, currencies and ambiguity", () => {
   const quote = parseQuickCreate("Quote for Acme; 2 x Design @ R1,250.50; VAT 15%; due in 14 days");
   assert.equal(quote.document_type, "quote"); assert.equal(quote.customer.name, "Acme"); assert.equal(quote.items[0].unit_price_minor, 125050); assert.equal(quote.tax_bps, 1500); assert.equal(quote.due_in_days, 14);
@@ -293,11 +305,26 @@ test("generic APIs render all template/page/type combinations and mock sends are
       assert.equal(unchanged.status, "draft");
     } finally { if (originalProvider === undefined) delete process.env.MONEYFY_EMAIL_PROVIDER; else process.env.MONEYFY_EMAIL_PROVIDER = originalProvider; }
 
-    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
-    response = await fetch(`${base}/api/business-logo`, { method: "POST", headers: { "Content-Type": "image/png", "X-File-Name": "moneyfy.png" }, body: png });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    response = await fetch(`${base}/api/business-logo`, { method: "POST", headers: { "Content-Type": "image/png", "X-File-Name": "forma.png" }, body: png });
     assert.equal(response.status, 201); const uploaded = (await response.json()).data;
     assert.match(uploaded.asset.url, /^\/api\/assets\//); assert.equal(uploaded.profile.logo_url, uploaded.asset.url);
     response = await fetch(`${base}${uploaded.asset.url}`); assert.equal(response.status, 200); assert.equal(response.headers.get("content-type"), "image/png");
+    const brandedDocument = (await (await fetch(`${base}/api/documents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...valid(undefined, { supplier: { ...valid().supplier, logo_url: uploaded.asset.url } }), document_type: "invoice" }) })).json()).data;
+    response = await fetch(`${base}/api/documents/${brandedDocument.id}/pdf`);
+    assert.equal(response.status, 200);
+    const brandedPdf = Buffer.from(await response.arrayBuffer()).toString("latin1");
+    assert.match(brandedPdf, /\/Subtype \/Image/);
+    assert.match(brandedPdf, /\/Width 1\b/);
+    assert.match(brandedPdf, /\/Height 1\b/);
+
+    response = await fetch(base);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<img src="\/VKT-logo\.png" alt="Forma" class="brand-logo">/);
+    response = await fetch(`${base}/VKT-logo.png`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "image/png");
     response = await fetch(`${base}/api/business-logo`, { method: "POST", headers: { "Content-Type": "image/png" }, body: Buffer.from("not-a-png") });
     assert.equal(response.status, 422);
 

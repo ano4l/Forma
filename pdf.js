@@ -6,11 +6,11 @@ import { templateFor } from "./templates.js";
 const money = (minor, currency = "ZAR") => new Intl.NumberFormat("en-ZA", { style: "currency", currency }).format((minor || 0) / 100);
 const labelFor = (type) => type === "quote" ? "Quote" : type === "receipt" ? "Receipt" : "Invoice";
 
-function writeDocumentPdf(document, response) {
+function writeDocumentPdf(document, response, { logo } = {}) {
   const data = document.snapshot || { ...document.data, totals: document.totals };
   const totals = data.totals || document.totals;
   const template = templateFor(data.template_id || "classic");
-  const doc = new PDFDocument({ size: data.page_size || "A4", margin: 48, bufferPages: true, info: { Title: `${data.document_title || labelFor(document.document_type)} ${document.number}`, Author: data.supplier?.name || "Moneyfy" } });
+  const doc = new PDFDocument({ size: data.page_size || "A4", margin: 48, bufferPages: true, info: { Title: `${data.document_title || labelFor(document.document_type)} ${document.number}`, Author: data.supplier?.name || "VirtuKey Forma" } });
   doc.pipe(response);
 
   const pageWidth = doc.page.width;
@@ -26,8 +26,18 @@ function writeDocumentPdf(document, response) {
 
   const header = () => {
     y = margin;
-    doc.fillColor(accent).roundedRect(margin, y, 34, 34, 4).fill();
-    doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(13).text((data.supplier?.name || "M").slice(0, 1).toUpperCase(), margin + 11, y + 10);
+    let logoDrawn = false;
+    try {
+      if (!logo) throw new Error("No renderable logo supplied");
+      doc.image(logo, margin, y, { fit: [34, 34], align: "center", valign: "center" });
+      logoDrawn = true;
+    } catch (e) {
+      // Fallback if image load fails
+    }
+    if (!logoDrawn) {
+      doc.fillColor(accent).roundedRect(margin, y, 34, 34, 4).fill();
+      doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(13).text((data.supplier?.name || "F").slice(0, 1).toUpperCase(), margin + 11, y + 10);
+    }
     doc.fillColor(ink).font(template.font).fontSize(dense ? 20 : 24).text(data.document_title || labelFor(document.document_type), margin, y + 48);
     doc.fillColor(muted).font("Helvetica").fontSize(9).text(document.number, margin, y + 77);
     doc.fillColor(ink).font("Helvetica-Bold").fontSize(11).text(data.supplier?.name || "", pageWidth * 0.58, y + 2, { width: right - pageWidth * 0.58, align: "right" });
@@ -88,17 +98,17 @@ function writeDocumentPdf(document, response) {
   doc.end();
 }
 
-export function createDocumentPdf(document, response) {
+export function createDocumentPdf(document, response, options) {
   response.setHeader("Content-Type", "application/pdf");
   response.setHeader("Content-Disposition", `attachment; filename="${document.number}.pdf"`);
-  writeDocumentPdf(document, response);
+  writeDocumentPdf(document, response, options);
 }
 
-export async function renderDocumentPdf(document) {
+export async function renderDocumentPdf(document, options) {
   const stream = new PassThrough(); const chunks = [];
   stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
   const finished = once(stream, "end");
-  writeDocumentPdf(document, stream);
+  writeDocumentPdf(document, stream, options);
   await finished;
   return Buffer.concat(chunks);
 }

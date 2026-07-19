@@ -17,11 +17,11 @@ Environment variables:
 
 ```text
 NODE_ENV=production
-MONEYFY_DB=/tmp/virtudoc.sqlite
-MONEYFY_UPLOAD_DIR=/tmp/virtudoc-uploads
-MONEYFY_EMAIL_PROVIDER=resend
-MONEYFY_RESEND_API_KEY=...
-MONEYFY_EMAIL_FROM="VirtuDoc <billing@yourdomain.com>"
+FORMA_DB=/tmp/forma.sqlite
+FORMA_UPLOAD_DIR=/tmp/forma-uploads
+FORMA_EMAIL_PROVIDER=resend
+FORMA_RESEND_API_KEY=...
+FORMA_EMAIL_FROM="Forma <billing@yourdomain.com>"
 SUPABASE_URL=...
 SUPABASE_ANON_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
@@ -56,12 +56,14 @@ The app already uses a provider abstraction in `email-provider.js`.
 To enable Resend:
 
 ```text
-MONEYFY_EMAIL_PROVIDER=resend
-MONEYFY_RESEND_API_KEY=re_xxxxxxxxx
-MONEYFY_EMAIL_FROM="VirtuDoc <billing@yourdomain.com>"
+FORMA_EMAIL_PROVIDER=resend
+FORMA_RESEND_API_KEY=re_xxxxxxxxx
+FORMA_EMAIL_FROM="Forma <billing@yourdomain.com>"
 ```
 
 Every document send includes a generated PDF attachment and an `Idempotency-Key`. Provider acceptance is recorded before drafts become sent; provider failures are stored without finalizing the draft.
+
+Legacy `MONEYFY_*` runtime variables remain accepted during migration, but new environments should use the `FORMA_*` names above.
 
 ## Railway handoff
 
@@ -72,4 +74,3 @@ Railway config is provided in `railway.json`. When moving from Vercel preview to
 3. Keep `npm start` as the start command.
 4. Point health checks at `/api/health`.
 5. Replace the SQLite store with the Postgres adapter before relying on production data durability.
-
