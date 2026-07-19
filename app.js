@@ -3,7 +3,7 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
 
-const state = { route: location.hash.slice(1) || "invoice", invoices: [], customers: [], products: [], current: null, audit: [], customerQuery: "", productQuery: "", invoiceQuery: "", invoiceStatus: "all", saveTimer: null, savePromise: null, editRevision: 0, savedRevision: 0, saving: false, saveError: false, touched: new Set(), expandedLines: new Set(), documents: [], document: null, templates: [], profile: {}, paymentMethods: [], emailTemplates: [], brandingPresets: [], numberPrefixes: {}, settingsEmailPurpose: "", documentQuery: "", documentType: "all", documentCustomerQuery: "", documentProductQuery: "", quickText: "", quickParsed: null, documentSaving: false, documentEmailHistory: [], documentUndo: null, recurringSchedules: [], reminderRules: [], dueReminders: [] };
+const state = { route: location.hash.slice(1) || "documents", invoices: [], customers: [], products: [], current: null, audit: [], customerQuery: "", productQuery: "", invoiceQuery: "", invoiceStatus: "all", saveTimer: null, savePromise: null, editRevision: 0, savedRevision: 0, saving: false, saveError: false, touched: new Set(), expandedLines: new Set(), documents: [], document: null, templates: [], profile: {}, paymentMethods: [], emailTemplates: [], brandingPresets: [], numberPrefixes: {}, settingsEmailPurpose: "", documentQuery: "", documentType: "all", documentCustomerQuery: "", documentProductQuery: "", quickText: "", quickParsed: null, documentSaving: false, documentSaveError: false, documentSaveTimer: null, documentSavePromise: null, documentEditRevision: 0, documentSavedRevision: 0, documentEmailHistory: [], documentUndo: null, recurringSchedules: [], reminderRules: [], dueReminders: [] };
 const routes = [
   ["dashboard", "grid", "Dashboard", "Workspace"],
   ["documents", "file", "Documents", "Workspace"],
@@ -11,7 +11,6 @@ const routes = [
   ["recurring", "copy", "Recurring", "Workspace"],
   ["reminders", "bell", "Reminders", "Workspace"],
   ["invoices", "file", "Invoices", "Workspace"],
-  ["invoice", "plus", "Create invoice", "Workspace"],
   ["customers", "users", "Customers", "Manage"],
   ["products", "box", "Products", "Manage"],
   ["reports", "chart", "Reports", "Insights"],
@@ -26,7 +25,7 @@ async function api(path, options = {}) {
   return payload?.data ?? payload;
 }
 
-const money = (minor = 0, currency = state.current?.data?.currency || "ZAR") => new Intl.NumberFormat("en-ZA", { style: "currency", currency, minimumFractionDigits: 2 }).format(minor / 100);
+const money = (minor = 0, currency = state.document?.data?.currency || state.current?.data?.currency || "ZAR") => new Intl.NumberFormat("en-ZA", { style: "currency", currency, minimumFractionDigits: 2 }).format(minor / 100);
 const dateLabel = (value) => value ? new Intl.DateTimeFormat("en-ZA", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T12:00:00`)) : "Not set";
 const initials = (name = "") => name.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "--";
 const lineMath = (item) => { const gross = Math.round((Number(item.quantity) || 0) * (Number(item.unit_price_minor) || 0)); const discount = Math.round(gross * (Number(item.discount_bps) || 0) / 10000); const tax = Math.round((gross - discount) * (Number(item.tax_bps) || 0) / 10000); return { gross, discount, tax, total: gross - discount + tax }; };
@@ -216,7 +215,10 @@ function renderDirectory(type) {
 const documentTypeLabel = (type = "invoice") => ({ invoice: "Invoice", quote: "Quote", receipt: "Receipt" }[type] || type);
 const documentCustomer = (document) => document?.data?.customer?.name || document?.data?.customer_name || "No customer";
 const documentTotal = (document) => document?.totals?.total_minor ?? document?.data?.total_minor ?? 0;
-const simpleInput = (label, id, value = "", type = "text", options = {}) => `<div class="field ${options.span || ""}"><label for="${id}">${label}</label><div class="input-wrap"><input id="${id}" type="${type}" value="${escapeHtml(value ?? "")}" ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""} ${options.min !== undefined ? `min="${options.min}"` : ""} ${options.step !== undefined ? `step="${options.step}"` : ""}>${options.suffix ? `<span class="suffix">${escapeHtml(options.suffix)}</span>` : ""}</div></div>`;
+const simpleInput = (label, id, value = "", type = "text", options = {}) => {
+  const disabled = options.disabled || (id.startsWith("document") && state.document && state.document.status !== "draft");
+  return `<div class="field ${options.span || ""}"><label for="${id}">${label}</label><div class="input-wrap"><input id="${id}" type="${type}" value="${escapeHtml(value ?? "")}" ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""} ${options.min !== undefined ? `min="${options.min}"` : ""} ${options.step !== undefined ? `step="${options.step}"` : ""} ${disabled ? "disabled" : ""}>${options.suffix ? `<span class="suffix">${escapeHtml(options.suffix)}</span>` : ""}</div></div>`;
+};
 const documentTemplate = (document) => state.templates.find((item) => item.id === document?.data?.template_id) || state.templates[0] || { id: "classic", name: "Classic", accent: "#7f56d9", density: "comfortable" };
 function genericTotals(data = {}) {
   const lines = (data.items || []).map((item) => {
@@ -339,9 +341,9 @@ function renderDocumentEditor() {
   const paymentOptions = state.paymentMethods.map((method) => `<option value="${escapeHtml(method.id)}" ${data.payment_method_id === method.id ? "selected" : ""}>${escapeHtml(method.name)}</option>`).join("");
   const issueDateLabel = document.document_type === "receipt" ? "Payment date" : "Issue date";
   const endDateField = document.document_type === "receipt" ? simpleInput("Payment reference", "documentReceiptReference", data.payment_reference || data.receipt_for || "", "text", { placeholder: "Bank or transaction reference" }) : simpleInput("Due or expiry date", "documentDueDate", data.due_date || data.expiry_date || "", "date");
-  return `<div class="page document-editor">${pageHead(`Documents / ${documentTypeLabel(document.document_type)}`, `${escapeHtml(document.number)}`, "Edit document details, then use its lifecycle controls when ready.", `${documentActionMarkup(document)}`)}
+  return `<div class="page document-editor">${pageHead(`Documents / ${documentTypeLabel(document.document_type)}`, `${escapeHtml(document.number)}`, "One authoring workflow for invoices, quotes, and receipts.", `${draft ? documentSaveStateMarkup() : ""}${documentActionMarkup(document)}`)}
     <div class="generic-editor-grid"><section class="section-card"><div class="section-head"><div class="section-title"><span class="section-number">1</span><div><h2>Document details</h2><p>Type is fixed after creation to preserve document history.</p></div></div><span class="status ${escapeHtml(document.status)}">${escapeHtml(document.status)}</span></div>
-      <div class="field-grid">${simpleInput("Document type", "documentTypeDisplay", documentTypeLabel(document.document_type), "text", { span: "", placeholder: "" })}${simpleInput("Title", "documentTitle", data.document_title || documentTypeLabel(document.document_type), "text")}${simpleInput("Number", "documentNumber", data.number || document.number, "text")}${simpleInput("Currency", "documentCurrency", data.currency || "ZAR", "text")}${simpleInput(issueDateLabel, "documentIssueDate", data.issue_date || "", "date")}${endDateField}</div>
+      <div class="field-grid">${simpleInput("Document type", "documentTypeDisplay", documentTypeLabel(document.document_type), "text", { disabled: true })}${simpleInput("Title", "documentTitle", data.document_title || documentTypeLabel(document.document_type), "text", { disabled: !draft })}${simpleInput("Number", "documentNumber", data.number || document.number, "text", { disabled: !draft })}${simpleInput("Currency", "documentCurrency", data.currency || "ZAR", "text", { disabled: !draft })}${simpleInput(issueDateLabel, "documentIssueDate", data.issue_date || "", "date", { disabled: !draft })}${endDateField}</div>${document.document_type === "receipt" ? "" : `<div class="field span-2"><label>Payment terms</label><div class="terms">${[0,7,14,30,60].map((days) => `<button type="button" class="term-chip ${Number(data.terms_days) === days ? "active" : ""}" data-document-terms="${days}" ${draft ? "" : "disabled"}>${days === 0 ? "Due now" : `Net ${days}`}</button>`).join("")}</div></div>`}
       <div class="generic-customer-fields"><div class="section-head"><div><h3>Client</h3><p>Choose a saved client or enter one-off billing details.</p></div>${draft ? `<button class="btn" data-new-customer>${icon("plus")}New client</button>` : ""}</div>${draft ? `<div class="document-quick-picker"><div class="input-wrap">${icon("search")}<input id="documentCustomerSearch" aria-label="Search saved clients" placeholder="Search saved clients by name or email" value="${escapeHtml(state.documentCustomerQuery)}"></div><div class="document-choice-list">${customerMatches.map((customer) => `<button type="button" class="document-choice ${data.customer_id === customer.id ? "active" : ""}" data-select-document-customer="${escapeHtml(customer.id)}"><span class="customer-avatar">${initials(customer.name)}</span><span><strong>${escapeHtml(customer.name)}</strong><small>${escapeHtml(customer.email || customer.address)}</small></span><em>${escapeHtml(customer.currency || "ZAR")}</em></button>`).join("") || `<span class="document-choice-empty">No saved client matches. Add a client or enter details below.</span>`}</div></div>` : ""}<div class="field-grid">${simpleInput("Company name", "documentCustomerName", data.customer?.name || "", "text")}${simpleInput("Contact name", "documentCustomerContact", data.customer?.contact_name || "", "text", { placeholder: "Accounts payable contact" })}${simpleInput("Email", "documentCustomerEmail", data.customer?.email || "", "email", { placeholder: "accounts@example.com" })}${simpleInput("Phone", "documentCustomerPhone", data.customer?.phone || "", "tel", { placeholder: "+27 21 000 0000" })}${simpleInput("VAT number", "documentCustomerVat", data.customer?.vat_number || "", "text")}${simpleInput("Registration number", "documentCustomerRegistration", data.customer?.registration_number || "", "text")}${simpleInput("Address", "documentCustomerAddress", data.customer?.address || "", "text", { span: "span-2", placeholder: "Street, city, postal code" })}</div></div>
       <div class="presentation-card"><div class="section-head"><div><h3>Template and branding</h3><p>Choose a paper style, page size, and the details that appear on every copy.</p></div><span class="template-selected">${escapeHtml(template.name)}</span></div><div class="template-gallery" role="listbox" aria-label="Document templates">${state.templates.map((item) => `<button type="button" class="template-card ${item.id === template.id ? "active" : ""}" data-select-document-template="${escapeHtml(item.id)}" role="option" aria-selected="${item.id === template.id}"><span class="template-swatch" style="background:${escapeHtml(item.accent)}"></span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.density || "comfortable")}</small></button>`).join("")}</div><div class="field-grid presentation-controls"><div class="field"><label for="documentTemplate">Template</label><div class="input-wrap"><select id="documentTemplate"><option value="">Default template</option>${templateOptions}</select></div></div>${simpleInput("Accent HEX", "documentAccent", data.accent || template.accent || "#7f56d9", "text", { placeholder: "#7f56d9" })}${simpleInput("Footer", "documentFooter", data.footer || "", "text", { span: "span-2", placeholder: "Thank you for your business." })}${simpleInput("Signature", "documentSignature", data.signature || "", "text", { span: "span-2", placeholder: "Optional authorised signature" })}<div class="field"><label for="documentPageSize">Page size</label><div class="input-wrap"><select id="documentPageSize"><option value="A4" ${(data.page_size || "A4") === "A4" ? "selected" : ""}>A4</option><option value="LETTER" ${data.page_size === "LETTER" ? "selected" : ""}>Letter</option></select></div></div></div></div>
       <div class="generic-lines"><div class="section-head"><div><h3>Items</h3><p>Start from a saved product or enter an item directly.</p></div>${draft ? `<button class="btn" data-add-document-line>${icon("plus")}Add line</button>` : ""}</div>${draft ? `<div class="document-product-picker"><div class="input-wrap">${icon("search")}<input id="documentProductSearch" aria-label="Search saved products" placeholder="Add saved product or service" value="${escapeHtml(state.documentProductQuery)}"></div>${productQuery ? `<div class="document-product-results">${productMatches.map((product) => `<button type="button" data-add-document-product="${escapeHtml(product.id)}"><span><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(product.description || "Saved product")}</small></span><b>${money(product.unit_price_minor, product.currency)}</b></button>`).join("") || `<span>No saved product matches.</span>`}</div>` : ""}</div>` : ""}<div class="document-line-head" aria-hidden="true"><span>Description</span><span>Qty</span><span>Unit price</span><span>Tax</span><span>Discount</span><span>Total</span><span></span></div>${items.map((item, index) => `<div class="document-line" data-document-row="${index}"><input aria-label="Description for line ${index + 1}" data-document-line="description" data-document-index="${index}" value="${escapeHtml(item.description || "")}" placeholder="Description" ${draft ? "" : "disabled"}><input aria-label="Quantity for line ${index + 1}" data-document-line="quantity" data-document-index="${index}" type="number" min="0.01" step="0.01" value="${escapeHtml(item.quantity ?? 1)}" ${draft ? "" : "disabled"}><input aria-label="Unit price for line ${index + 1}" data-document-line="unit_price" data-document-index="${index}" type="number" min="0" step="0.01" value="${escapeHtml(((item.unit_price_minor || 0) / 100).toFixed(2))}" ${draft ? "" : "disabled"}><input aria-label="Tax percent for line ${index + 1}" data-document-line="tax_bps" data-document-index="${index}" type="number" min="0" max="100" step="0.01" value="${escapeHtml(((item.tax_bps || 0) / 100).toFixed(2))}" ${draft ? "" : "disabled"}><input aria-label="Discount percent for line ${index + 1}" data-document-line="discount_bps" data-document-index="${index}" type="number" min="0" max="100" step="0.01" value="${escapeHtml(((item.discount_bps || 0) / 100).toFixed(2))}" ${draft ? "" : "disabled"}><div class="document-line-total">${money(genericTotals({ items: [item] }).total, data.currency)}</div>${draft ? `<div class="document-line-actions"><button class="icon-btn" data-move-document-line="${index}:up" aria-label="Move line ${index + 1} up">${icon("chevron")}</button><button class="icon-btn" data-move-document-line="${index}:down" aria-label="Move line ${index + 1} down">${icon("chevron")}</button><button class="icon-btn" data-remove-document-line="${index}" aria-label="Remove line ${index + 1}">${icon("trash")}</button></div>` : ""}</div>`).join("") || `<p class="panel-sub">No line items yet.</p>`}</div>
@@ -375,7 +377,7 @@ function renderGeneric(title) { return `<div class="page">${pageHead("Forma",tit
 
 function render() {
   renderNav();
-  const views = { invoice: renderInvoice, invoices: renderInvoices, documents: renderDocuments, recurring: renderRecurring, reminders: renderReminders, "document-editor": renderDocumentEditor, "quick-create": renderQuickCreate, dashboard: renderDashboard, customers: () => renderDirectory("customers"), products: () => renderDirectory("products"), reports: renderReports, settings: renderSettings };
+  const views = { invoices: renderInvoices, documents: renderDocuments, recurring: renderRecurring, reminders: renderReminders, "document-editor": renderDocumentEditor, "quick-create": renderQuickCreate, dashboard: renderDashboard, customers: () => renderDirectory("customers"), products: () => renderDirectory("products"), reports: renderReports, settings: renderSettings };
   $("#content").innerHTML = (views[state.route] || renderDashboard)();
   bindPage();
 }
@@ -436,13 +438,15 @@ async function loadDocumentSupport() {
   state.templates = templates || []; state.profile = profile || {}; state.paymentMethods = paymentMethods || []; state.emailTemplates = emailTemplates || []; state.brandingPresets = brandingPresets || []; state.numberPrefixes = numberPrefixes || {};
 }
 async function openDocument(id) {
-  try { state.document = await api(`/api/documents/${id}`); await Promise.all([loadDocumentSupport(), loadDocumentEmailHistory(id)]); setRoute("document-editor"); }
+  try { if (state.document?.status === "draft") await saveDocument({ quiet: true }); state.document = await api(`/api/documents/${id}`); state.documentEditRevision = 0; state.documentSavedRevision = 0; state.documentSaveError = false; await Promise.all([loadDocumentSupport(), loadDocumentEmailHistory(id)]); setRoute("document-editor"); }
   catch (error) { toast(error.message, "error"); }
 }
 function defaultDocumentData(type) {
   const today = new Date().toISOString().slice(0, 10);
+  const termsDays = Number(state.profile.default_terms_days || 30);
+  const due = new Date(`${today}T12:00:00`); due.setDate(due.getDate() + termsDays);
   const defaultPayment = state.paymentMethods.find((method) => method.is_default) || state.paymentMethods[0];
-  return { document_type: type, document_title: type === "quote" ? "Quote" : type === "receipt" ? "Receipt" : "Tax Invoice", currency: state.profile.default_currency || "ZAR", issue_date: today, due_date: today, supplier: { name: state.profile.name || state.profile.business_name || "", address: state.profile.address || "", vat_number: state.profile.vat_number || "" }, customer: {}, payment_method_id: defaultPayment?.id || null, payment_method: defaultPayment?.name || "Bank transfer", payment_details: defaultPayment?.details?.instructions || "", items: [{ description: "", quantity: 1, unit_price_minor: 0, tax_bps: type === "receipt" ? 0 : 1500, discount_bps: 0 }] };
+  return { document_type: type, document_title: type === "quote" ? "Quote" : type === "receipt" ? "Receipt" : "Tax Invoice", currency: state.profile.default_currency || "ZAR", issue_date: today, due_date: type === "receipt" ? today : due.toISOString().slice(0, 10), terms_days: type === "receipt" ? 0 : termsDays, supplier: { name: state.profile.name || state.profile.business_name || "", address: state.profile.address || "", vat_number: state.profile.vat_number || "", logo_url: state.profile.logo_url || "" }, customer: {}, payment_method_id: defaultPayment?.id || null, payment_method: defaultPayment?.name || "Bank transfer", payment_details: defaultPayment?.details?.instructions || "", items: [{ description: "", quantity: 1, unit_price_minor: 0, tax_bps: type === "receipt" ? 0 : 1500, discount_bps: 0 }] };
 }
 function openNewDocumentModal() {
   $("#modalContent").innerHTML = `<h2>New document</h2><p class="lead">Choose the document type before assigning a number and lifecycle.</p><div class="field"><label for="newDocumentType">Document type</label><div class="input-wrap"><select id="newDocumentType"><option value="invoice">Invoice</option><option value="quote">Quote</option><option value="receipt">Receipt</option></select></div></div><div class="field"><label for="newDocumentTemplate">Template</label><div class="input-wrap"><select id="newDocumentTemplate"><option value="">Default template</option>${state.templates.map((template) => `<option value="${escapeHtml(template.id || template.key || "")}">${escapeHtml(template.name || template.title || template.id || "Template")}</option>`).join("")}</select></div></div><div class="modal-actions"><button class="btn" value="cancel">Cancel</button><button class="btn primary" type="button" id="confirmNewDocument">Create document</button></div>`;
@@ -450,10 +454,21 @@ function openNewDocumentModal() {
 }
 async function createDocument(type, templateId = "") {
   try {
+    if (state.document?.status === "draft") await saveDocument({ quiet: true });
     const data = defaultDocumentData(type); if (templateId) data.template_id = templateId;
     state.document = await api("/api/documents", { method: "POST", body: JSON.stringify(data) });
+    state.documentEditRevision = 0; state.documentSavedRevision = 0; state.documentSaveError = false;
     $("#modal").open && $("#modal").close(); await refreshDocuments(); setRoute("document-editor"); toast(`${documentTypeLabel(type)} created`);
+    return state.document;
   } catch (error) { toast(error.message, "error"); }
+}
+async function duplicateDocument(id) {
+  try {
+    state.document = await api(`/api/invoices/${id}/duplicate`, { method: "POST", body: "{}" });
+    state.documentEditRevision = 0; state.documentSavedRevision = 0; state.documentSaveError = false;
+    await Promise.all([refreshDocuments(), refreshLists(), loadDocumentEmailHistory(state.document.id)]);
+    setRoute("document-editor"); toast("Invoice duplicated as a new draft");
+  } catch (error) { toast(`Invoice not duplicated: ${error.message}`, "error"); }
 }
 function readDocumentForm() {
   if (!state.document) return;
@@ -495,19 +510,47 @@ function updateDocumentPreview() {
   const total = $("[data-generic-total]");
   if (total) total.textContent = money(genericTotals(state.document.data).total, state.document.data.currency);
 }
-async function saveDocument() {
+function documentSaveStateMarkup() {
+  if (state.documentSaveError) return `<span class="save-state error" data-document-save-state>Could not save</span>`;
+  if (state.documentSaving) return `<span class="save-state saving" data-document-save-state><i></i>Saving...</span>`;
+  return `<span class="save-state" data-document-save-state><i></i>Saved ${state.document ? new Date(state.document.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>`;
+}
+function patchDocumentSaveState() { const current = $("[data-document-save-state]"); if (current) current.outerHTML = documentSaveStateMarkup(); }
+function scheduleDocumentSave(immediate = false) {
   if (!state.document || state.document.status !== "draft") return;
-  try {
-    readDocumentForm(); state.documentSaving = true;
-    state.document = await api(`/api/documents/${state.document.id}`, { method: "PUT", body: JSON.stringify(state.document.data) });
-    await refreshDocuments(); render(); toast("Document saved");
-  } catch (error) { toast(`Document not saved: ${error.message}`, "error"); }
-  finally { state.documentSaving = false; }
+  state.documentEditRevision += 1; state.documentSaving = true; state.documentSaveError = false;
+  clearTimeout(state.documentSaveTimer); patchDocumentSaveState();
+  state.documentSaveTimer = setTimeout(() => saveDocument({ quiet: true }), immediate ? 0 : 650);
+}
+async function saveDocument({ quiet = false } = {}) {
+  if (!state.document || state.document.status !== "draft") return state.document;
+  clearTimeout(state.documentSaveTimer);
+  if (state.documentSavePromise) return state.documentSavePromise;
+  state.documentSavePromise = (async () => {
+    try {
+      do {
+        readDocumentForm();
+        const documentId = state.document.id; const revision = state.documentEditRevision; const data = structuredClone(state.document.data);
+        state.documentSaving = true; state.documentSaveError = false; patchDocumentSaveState();
+        const saved = await api(`/api/documents/${documentId}`, { method: "PUT", body: JSON.stringify(data) });
+        if (state.document?.id !== documentId) break;
+        state.documentSavedRevision = revision;
+        state.document = state.documentEditRevision === revision ? saved : { ...saved, data: state.document.data };
+      } while (state.documentSavedRevision < state.documentEditRevision);
+      state.documentSaving = false; state.documentSaveError = false; patchDocumentSaveState(); await Promise.all([refreshDocuments(), refreshLists()]);
+      if (!quiet) { render(); toast("Document saved"); }
+      return state.document;
+    } catch (error) {
+      state.documentSaving = false; state.documentSaveError = true; patchDocumentSaveState(); toast(`Document not saved: ${error.message}`, "error"); return null;
+    } finally { state.documentSavePromise = null; }
+  })();
+  return state.documentSavePromise;
 }
 async function uploadDocumentAttachment() {
   const file = $("#documentAttachmentFile")?.files?.[0];
   if (!file || !state.document) return toast("Choose an attachment first", "error");
   try {
+    if (state.document.status === "draft") await saveDocument({ quiet: true });
     const response = await fetch(`/api/documents/${state.document.id}/attachments`, { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || `Attachment upload failed (${response.status})`);
@@ -534,10 +577,10 @@ async function removeInvoiceAttachment(assetId) {
   try { state.current = await api(`/api/documents/${state.current.id}/attachments/${assetId}`, { method: "DELETE" }); await refreshLists(); render(); toast("Attachment removed"); }
   catch (error) { toast(`Attachment was not removed: ${error.message}`, "error"); }
 }
-function addDocumentLine() { state.document?.data?.items?.push({ description: "", quantity: 1, unit_price_minor: 0, tax_bps: 1500, discount_bps: 0 }); render(); setTimeout(() => $$('[data-document-line="description"]').at(-1)?.focus(), 0); }
-function selectDocumentCustomer(id) { const customer = state.customers.find((item) => item.id === id); if (!customer || !state.document) return; const issue = new Date(`${state.document.data.issue_date || new Date().toISOString().slice(0, 10)}T12:00:00`); issue.setDate(issue.getDate() + Number(customer.terms_days || 30)); state.document.data.customer_id = customer.id; state.document.data.customer = { ...customer }; state.document.data.currency = customer.currency || state.document.data.currency; state.document.data.due_date = issue.toISOString().slice(0, 10); state.documentCustomerQuery = ""; render(); toast(`${customer.name} selected`); }
-function addDocumentProduct(id) { const product = state.products.find((item) => item.id === id); if (!product || !state.document) return; state.document.data.items.push({ product_id: product.id, description: product.name, detail: product.description, quantity: 1, unit_price_minor: product.unit_price_minor, tax_bps: product.tax_bps, discount_bps: 0 }); state.documentProductQuery = ""; render(); toast("Saved product added"); }
-function updateDocumentLine(input) { const item = state.document?.data?.items?.[Number(input.dataset.documentIndex)]; if (!item) return; const key = input.dataset.documentLine; if (key === "unit_price") item.unit_price_minor = Math.round((Number(input.value) || 0) * 100); else if (key === "quantity") item.quantity = Number(input.value) || 1; else if (key === "tax_bps" || key === "discount_bps") item[key] = Math.round((Number(input.value) || 0) * 100); else item[key] = input.value; updateDocumentPreview(); }
+function addDocumentLine() { state.document?.data?.items?.push({ description: "", quantity: 1, unit_price_minor: 0, tax_bps: state.document?.document_type === "receipt" ? 0 : 1500, discount_bps: 0 }); render(); scheduleDocumentSave(); setTimeout(() => $$('[data-document-line="description"]').at(-1)?.focus(), 0); }
+function selectDocumentCustomer(id) { const customer = state.customers.find((item) => item.id === id); if (!customer || !state.document) return; const termsDays = Number(customer.terms_days || 30); const issue = new Date(`${state.document.data.issue_date || new Date().toISOString().slice(0, 10)}T12:00:00`); issue.setDate(issue.getDate() + termsDays); state.document.data.customer_id = customer.id; state.document.data.customer = { ...customer }; state.document.data.currency = customer.currency || state.document.data.currency; state.document.data.terms_days = termsDays; state.document.data.due_date = issue.toISOString().slice(0, 10); state.documentCustomerQuery = ""; render(); scheduleDocumentSave(); toast(`${customer.name} selected`); }
+function addDocumentProduct(id) { const product = state.products.find((item) => item.id === id); if (!product || !state.document) return; const line = { product_id: product.id, description: product.name, detail: product.description, quantity: 1, unit_price_minor: product.unit_price_minor, tax_bps: product.tax_bps, discount_bps: 0 }; const items = state.document.data.items ||= []; const first = items[0]; if (items.length === 1 && first && !first.product_id && !String(first.description || "").trim() && Number(first.quantity) === 1 && !Number(first.unit_price_minor)) items[0] = line; else items.push(line); state.documentProductQuery = ""; render(); scheduleDocumentSave(); toast("Saved product added"); }
+function updateDocumentLine(input) { const item = state.document?.data?.items?.[Number(input.dataset.documentIndex)]; if (!item) return; const key = input.dataset.documentLine; if (key === "unit_price") item.unit_price_minor = Math.round((Number(input.value) || 0) * 100); else if (key === "quantity") item.quantity = Number(input.value) || 1; else if (key === "tax_bps" || key === "discount_bps") item[key] = Math.round((Number(input.value) || 0) * 100); else item[key] = input.value; updateDocumentPreview(); scheduleDocumentSave(); }
 async function parseQuickCreate() {
   const text = $("#quickText")?.value.trim(); if (!text) return toast("Describe the document first", "error");
   try { state.quickText = text; state.quickParsed = await api("/api/quick-create/parse", { method: "POST", body: JSON.stringify({ text }) }); render(); }
@@ -590,6 +633,10 @@ async function recordPayment() {
 }
 async function runDocumentAction(action) {
   if (!state.document) return;
+  if (state.document.status === "draft") {
+    await saveDocument({ quiet: true });
+    if (state.documentSaveError) return;
+  }
   if (action === "email") return openEmailCompose();
   if (action === "payment") return openPaymentDialog();
   if (action === "recurring") return openRecurringScheduleModal(state.document.id);
@@ -709,8 +756,8 @@ async function toggleReminderRule(id) {
 }
 
 function bindPage() {
-  $$('[data-route]').forEach((el) => el.onclick = () => setRoute(el.dataset.route));
-  $$('[data-new-invoice]').forEach((el) => el.onclick = createInvoice);
+  $$('[data-route]').forEach((el) => el.onclick = async () => { if (state.document?.status === "draft") await saveDocument({ quiet: true }); setRoute(el.dataset.route); });
+  $$('[data-new-invoice]').forEach((el) => el.onclick = () => createDocument("invoice"));
   $$('[data-quick-route]').forEach((el) => el.onclick = () => setRoute("quick-create"));
   $$('[data-new-document]').forEach((el) => el.onclick = openNewDocumentModal);
   $$('[data-new-recurring]').forEach((el) => el.onclick = () => openRecurringScheduleModal());
@@ -726,7 +773,7 @@ function bindPage() {
   $$('[data-document-action]').forEach((el) => el.onclick = () => runDocumentAction(el.dataset.documentAction));
   $$('[data-retry-document-email]').forEach((el) => el.onclick = openEmailCompose);
   $$('[data-document-pdf]').forEach((el) => el.onclick = () => window.open(`/api/documents/${state.document.id}/pdf`, "_blank"));
-  $$('[data-save-document]').forEach((el) => el.onclick = saveDocument);
+  $$('[data-save-document]').forEach((el) => el.onclick = () => saveDocument({ quiet: false }));
   $$('[data-add-document-line]').forEach((el) => el.onclick = addDocumentLine);
   $$('[data-select-document-customer]').forEach((el) => el.onclick = () => selectDocumentCustomer(el.dataset.selectDocumentCustomer));
   $$('[data-add-document-product]').forEach((el) => el.onclick = () => addDocumentProduct(el.dataset.addDocumentProduct));
@@ -734,10 +781,11 @@ function bindPage() {
   $$('[data-remove-document-attachment]').forEach((el) => el.onclick = () => removeDocumentAttachment(el.dataset.removeDocumentAttachment));
   $$('[data-upload-invoice-attachment]').forEach((el) => el.onclick = uploadInvoiceAttachment);
   $$('[data-remove-invoice-attachment]').forEach((el) => el.onclick = () => removeInvoiceAttachment(el.dataset.removeInvoiceAttachment));
-  $$('[data-remove-document-line]').forEach((el) => el.onclick = () => { const index = Number(el.dataset.removeDocumentLine); const removed = state.document.data.items.splice(index, 1)[0]; render(); const undo = document.createElement("button"); undo.className = "toast"; undo.type = "button"; undo.textContent = "Line removed. Undo"; undo.onclick = () => { state.document.data.items.splice(index, 0, removed); undo.remove(); render(); }; $("#toasts").append(undo); setTimeout(() => undo.remove(), 5000); });
+  $$('[data-remove-document-line]').forEach((el) => el.onclick = () => { const index = Number(el.dataset.removeDocumentLine); const removed = state.document.data.items.splice(index, 1)[0]; render(); scheduleDocumentSave(); const undo = document.createElement("button"); undo.className = "toast"; undo.type = "button"; undo.textContent = "Line removed. Undo"; undo.onclick = () => { state.document.data.items.splice(index, 0, removed); undo.remove(); render(); scheduleDocumentSave(); }; $("#toasts").append(undo); setTimeout(() => undo.remove(), 5000); });
   $$('[data-document-line]').forEach((el) => { el.oninput = () => updateDocumentLine(el); el.onkeydown = (event) => { if (event.key === "Enter" && el.dataset.documentLine === "description" && Number(el.dataset.documentIndex) === state.document.data.items.length - 1) { event.preventDefault(); addDocumentLine(); } }; });
-  $$('[data-move-document-line]').forEach((el) => el.onclick = () => { const [raw, direction] = el.dataset.moveDocumentLine.split(":"); const index = Number(raw); const target = direction === "up" ? index - 1 : index + 1; if (target < 0 || target >= state.document.data.items.length) return; [state.document.data.items[index], state.document.data.items[target]] = [state.document.data.items[target], state.document.data.items[index]]; render(); });
-  $$('[data-select-document-template]').forEach((el) => el.onclick = () => { const next = state.templates.find((item) => item.id === el.dataset.selectDocumentTemplate); state.document.data.template_id = el.dataset.selectDocumentTemplate; if (next?.accent) state.document.data.accent = next.accent; render(); });
+  $$('[data-move-document-line]').forEach((el) => el.onclick = () => { const [raw, direction] = el.dataset.moveDocumentLine.split(":"); const index = Number(raw); const target = direction === "up" ? index - 1 : index + 1; if (target < 0 || target >= state.document.data.items.length) return; [state.document.data.items[index], state.document.data.items[target]] = [state.document.data.items[target], state.document.data.items[index]]; render(); scheduleDocumentSave(); });
+  $$('[data-select-document-template]').forEach((el) => el.onclick = () => { if (state.document.status !== "draft") return; const next = state.templates.find((item) => item.id === el.dataset.selectDocumentTemplate); state.document.data.template_id = el.dataset.selectDocumentTemplate; if (next?.accent) state.document.data.accent = next.accent; render(); scheduleDocumentSave(); });
+  $$('[data-document-terms]').forEach((el) => el.onclick = () => { const days = Number(el.dataset.documentTerms); const issue = new Date(`${state.document.data.issue_date || new Date().toISOString().slice(0, 10)}T12:00:00`); issue.setDate(issue.getDate() + days); state.document.data.terms_days = days; state.document.data.due_date = issue.toISOString().slice(0, 10); render(); scheduleDocumentSave(); });
   $$('[data-open-document-preview]').forEach((el) => el.onclick = () => { $("#sheetTitle").textContent = `${documentTypeLabel(state.document.document_type)} preview`; $("#sheetBody").innerHTML = `<div class="generic-paper-wrap sheet-generic-paper">${genericPaperMarkup(state.document)}</div>`; $("#sheet").classList.add("open"); $("#sheet").setAttribute("aria-hidden", "false"); });
   $$('[data-parse-quick]').forEach((el) => el.onclick = parseQuickCreate);
   $$('[data-create-quick]').forEach((el) => el.onclick = createQuickDocument);
@@ -749,7 +797,7 @@ function bindPage() {
   $$('[data-save-branding]').forEach((el) => el.onclick = saveBrandingPreset);
   $$('[data-save-prefixes]').forEach((el) => el.onclick = saveNumberPrefixes);
   $$('[data-save-email-template]').forEach((el) => el.onclick = saveEmailTemplate);
-  $$('[data-open-invoice]').forEach((el) => el.onclick = async () => { state.current = await api(`/api/invoices/${el.dataset.openInvoice}`); resetSaveRevision(); await loadAudit(state.current.id); setRoute("invoice"); });
+  $$('[data-open-invoice]').forEach((el) => el.onclick = () => openDocument(el.dataset.openInvoice));
   $$('[data-download]').forEach((el) => el.onclick = () => window.open(`/api/invoices/${state.current.id}/pdf`, "_blank"));
   $$('[data-fullscreen-preview]').forEach((el) => el.onclick = () => window.open(`/api/invoices/${state.current.id}/pdf`, "_blank"));
   $$('[data-save]').forEach((el) => el.onclick = async () => { await saveDraft(); toast("Draft saved"); });
@@ -758,7 +806,7 @@ function bindPage() {
   $$('[data-duplicate]').forEach((el) => el.onclick = () => duplicateInvoice(state.current.id));
   $$('[data-mark-paid]').forEach((el) => el.onclick = markPaid);
   $$('[data-void]').forEach((el) => el.onclick = openVoidDialog);
-  $$('[data-duplicate-latest]').forEach((el) => el.onclick = () => state.invoices[0] && duplicateInvoice(state.invoices[0].id));
+  $$('[data-duplicate-latest]').forEach((el) => el.onclick = () => state.invoices[0] && duplicateDocument(state.invoices[0].id));
   $$('[data-page]').forEach((el) => el.onclick = () => {
     const page = el.dataset.page;
     document.querySelectorAll('.form-page').forEach(p => p.classList.remove('active'));
@@ -784,8 +832,8 @@ function bindPage() {
   $('[data-change-customer]') && ($('[data-change-customer]').onclick = () => { state.current.data.customer_id = null; state.current.data.customer = {}; render(); scheduleSave(); });
   $('[data-new-customer]') && ($('[data-new-customer]').onclick = openCustomerModal);
   $('[data-new-product]') && ($('[data-new-product]').onclick = openProductModal);
-  $$('[data-invoice-customer]').forEach((el) => el.onclick = async () => { await createInvoice(); selectCustomer(el.dataset.invoiceCustomer); });
-  $$('[data-use-product]').forEach((el) => el.onclick = async () => { await createInvoice(); addProduct(el.dataset.useProduct); });
+  $$('[data-invoice-customer]').forEach((el) => el.onclick = async () => { if (await createDocument("invoice")) selectDocumentCustomer(el.dataset.invoiceCustomer); });
+  $$('[data-use-product]').forEach((el) => el.onclick = async () => { if (await createDocument("invoice")) addDocumentProduct(el.dataset.useProduct); });
   $$('[data-product]').forEach((el) => el.onclick = () => addProduct(el.dataset.product));
   $$('[data-custom-item]').forEach((el) => el.onclick = addCustomItem);
   $$('[data-copy-line]').forEach((el) => el.onclick = () => { const index = Number(el.dataset.copyLine); state.current.data.items.splice(index + 1, 0, { ...state.current.data.items[index] }); render(); scheduleSave(); setTimeout(() => $(`#line-${index + 1}-description`)?.focus(), 0); toast("Line duplicated"); });
@@ -814,8 +862,8 @@ function bindPage() {
     const saveTemplate = $('[data-save-email-template]');
     if (saveTemplate && !$("#restoreEmailTemplate")) { const restore = document.createElement("button"); restore.id = "restoreEmailTemplate"; restore.type = "button"; restore.className = "btn"; restore.textContent = "Restore default"; restore.onclick = restoreEmailTemplate; saveTemplate.before(restore); }
   }
-  ["#documentTitle", "#documentNumber", "#documentCurrency", "#documentIssueDate", "#documentDueDate", "#documentReceiptReference", "#documentAccent", "#documentFooter", "#documentSignature", "#documentCustomerName", "#documentCustomerContact", "#documentCustomerEmail", "#documentCustomerPhone", "#documentCustomerVat", "#documentCustomerRegistration", "#documentCustomerAddress", "#documentPaymentDetails", "#documentDiscount", "#documentShipping", "#documentPoNumber", "#documentNotes"].forEach((selector) => { const input = $(selector); if (input) input.oninput = updateDocumentPreview; });
-  ["#documentTemplate", "#documentPageSize", "#documentPaymentMethod"].forEach((selector) => { const input = $(selector); if (input) input.onchange = updateDocumentPreview; });
+  ["#documentTitle", "#documentNumber", "#documentCurrency", "#documentIssueDate", "#documentDueDate", "#documentReceiptReference", "#documentAccent", "#documentFooter", "#documentSignature", "#documentCustomerName", "#documentCustomerContact", "#documentCustomerEmail", "#documentCustomerPhone", "#documentCustomerVat", "#documentCustomerRegistration", "#documentCustomerAddress", "#documentPaymentDetails", "#documentDiscount", "#documentShipping", "#documentPoNumber", "#documentNotes"].forEach((selector) => { const input = $(selector); if (input) input.oninput = () => { updateDocumentPreview(); scheduleDocumentSave(); }; });
+  ["#documentTemplate", "#documentPageSize", "#documentPaymentMethod"].forEach((selector) => { const input = $(selector); if (input) input.onchange = () => { updateDocumentPreview(); scheduleDocumentSave(); }; });
 }
 
 async function refreshLists() { [state.invoices, state.customers, state.products] = await Promise.all([api("/api/invoices"), api("/api/customers"), api("/api/products")]); }
@@ -874,18 +922,15 @@ function openProductModal() {
   $("#modal").showModal(); $("#createProduct").onclick = createProduct;
 }
 function modalInput(label,id,required=false,type="text",span="",value="") { return `<div class="field ${span}"><label for="${id}">${label}${required ? " *" : ""}</label><div class="input-wrap"><input id="${id}" type="${type}" value="${value}" ${required ? "required" : ""}></div></div>`; }
-async function createCustomer() { const payload = { name: $("#customerName").value.trim(), contact_name: $("#customerContact").value.trim(), email: $("#customerEmail").value.trim(), phone: $("#customerPhone").value.trim(), address: $("#customerAddress").value.trim(), country: "South Africa", vat_number: $("#customerVat").value.trim(), registration_number: $("#customerRegistration").value.trim(), notes: $("#customerNotes").value.trim(), vat_registered: Boolean($("#customerVat").value.trim()), currency: $("#customerCurrency").value.trim().toUpperCase() || "ZAR", terms_days: Number($("#customerTerms").value) || 30 }; if (!payload.name || !payload.email || !payload.address) return toast("Enter the client name, email address, and billing address.", "error"); try { const customer = await api("/api/customers", { method: "POST", body: JSON.stringify(payload) }); state.customers.unshift(customer); $("#modal").close(); if (state.route === "invoice") selectCustomer(customer.id); else if (state.route === "document-editor") selectDocumentCustomer(customer.id); else render(); } catch (error) { toast(error.message, "error"); } }
-async function createProduct() { const payload = { name: $("#productName").value.trim(), description: $("#productDescription").value.trim(), unit_price_minor: Math.round((Number($("#productPrice").value) || 0) * 100), tax_bps: Math.round((Number($("#productTax").value) || 0) * 100), currency: state.document?.data.currency || state.current?.data.currency || "ZAR" }; if (!payload.name) return toast("Enter a product or service name.", "error"); try { const product = await api("/api/products", { method: "POST", body: JSON.stringify(payload) }); state.products.unshift(product); $("#modal").close(); if (state.route === "invoice") addProduct(product.id); else if (state.route === "document-editor") addDocumentProduct(product.id); else render(); } catch (error) { toast(error.message, "error"); } }
+async function createCustomer() { const payload = { name: $("#customerName").value.trim(), contact_name: $("#customerContact").value.trim(), email: $("#customerEmail").value.trim(), phone: $("#customerPhone").value.trim(), address: $("#customerAddress").value.trim(), country: "South Africa", vat_number: $("#customerVat").value.trim(), registration_number: $("#customerRegistration").value.trim(), notes: $("#customerNotes").value.trim(), vat_registered: Boolean($("#customerVat").value.trim()), currency: $("#customerCurrency").value.trim().toUpperCase() || "ZAR", terms_days: Number($("#customerTerms").value) || 30 }; if (!payload.name || !payload.email || !payload.address) return toast("Enter the client name, email address, and billing address.", "error"); try { const customer = await api("/api/customers", { method: "POST", body: JSON.stringify(payload) }); state.customers.unshift(customer); $("#modal").close(); if (state.route === "document-editor") selectDocumentCustomer(customer.id); else render(); } catch (error) { toast(error.message, "error"); } }
+async function createProduct() { const payload = { name: $("#productName").value.trim(), description: $("#productDescription").value.trim(), unit_price_minor: Math.round((Number($("#productPrice").value) || 0) * 100), tax_bps: Math.round((Number($("#productTax").value) || 0) * 100), currency: state.document?.data.currency || "ZAR" }; if (!payload.name) return toast("Enter a product or service name.", "error"); try { const product = await api("/api/products", { method: "POST", body: JSON.stringify(payload) }); state.products.unshift(product); $("#modal").close(); if (state.route === "document-editor") addDocumentProduct(product.id); else render(); } catch (error) { toast(error.message, "error"); } }
 
 async function bootstrap() {
   try {
     await Promise.all([refreshLists(), refreshDocuments(), refreshRecurringSchedules(), refreshReminders(), loadDocumentSupport()]);
-    const hash = location.hash.slice(1); const [initialRoute, initialDocumentId] = hash.split("/");
+    const hash = location.hash.slice(1); let [initialRoute, initialDocumentId] = hash.split("/");
+    if (initialRoute === "invoice") { initialRoute = "documents"; state.route = "documents"; history.replaceState(null, "", "#documents"); }
     if (initialRoute === "document-editor" && initialDocumentId) { state.route = "document-editor"; state.documentRouteId = initialDocumentId; state.document = await api(`/api/documents/${initialDocumentId}`); await loadDocumentEmailHistory(initialDocumentId); }
-    state.current = state.invoices.find((item) => item.status === "draft") || null;
-    if (!state.current) state.current = await api("/api/invoices", { method: "POST", body: "{}" });
-    resetSaveRevision();
-    await loadAudit(state.current.id);
     render();
   } catch (error) { $("#content").innerHTML = `<div class="error-state"><div><h2>Could not open VirtuKey Forma</h2><p>${escapeHtml(error.message)}</p><button class="btn primary" onclick="location.reload()">Try again</button></div></div>`; }
 }
@@ -893,13 +938,10 @@ async function bootstrap() {
 $("#menuBtn").onclick = () => { $("#sidebar").classList.add("open"); $("#scrim").classList.add("show"); };
 $("#scrim").onclick = () => { $("#sidebar").classList.remove("open"); $("#scrim").classList.remove("show"); };
 document.addEventListener("click", (event) => { if (event.target.closest("[data-close-sheet]")) closeSheet(); });
-window.addEventListener("hashchange", async () => { const [next, documentId] = location.hash.slice(1).split("/"); if (!next) return; if (next === "document-editor" && documentId) { try { state.route = next; state.documentRouteId = documentId; state.document = await api(`/api/documents/${documentId}`); await Promise.all([loadDocumentSupport(), loadDocumentEmailHistory(documentId)]); render(); } catch (error) { toast(error.message, "error"); setRoute("documents"); } return; } if (next !== state.route) { state.route = next; state.documentRouteId = null; state.documentEmailHistory = []; render(); } });
+window.addEventListener("hashchange", async () => { const [next, documentId] = location.hash.slice(1).split("/"); if (!next) return; if (next === "invoice") return setRoute("documents"); if (next === "document-editor" && documentId) { try { state.route = next; state.documentRouteId = documentId; state.document = await api(`/api/documents/${documentId}`); await Promise.all([loadDocumentSupport(), loadDocumentEmailHistory(documentId)]); render(); } catch (error) { toast(error.message, "error"); setRoute("documents"); } return; } if (next !== state.route) { state.route = next; state.documentRouteId = null; state.documentEmailHistory = []; render(); } });
 window.addEventListener("keydown", (event) => {
   const command = event.metaKey || event.ctrlKey;
-  if (command && event.key.toLowerCase() === "s" && state.current?.status === "draft") { event.preventDefault(); saveDraft().then(() => { if (!state.saveError) toast("Draft saved"); }); }
-  if (command && event.key === "Enter" && state.route === "invoice" && state.current?.status === "draft" && !$("#modal").open && !$("#sheet").classList.contains("open")) { event.preventDefault(); openReview(); }
+  if (command && event.key.toLowerCase() === "s" && state.route === "document-editor" && state.document?.status === "draft") { event.preventDefault(); saveDocument({ quiet: false }); }
   if (event.key === "Escape") { closeSheet(); if ($("#modal").open) $("#modal").close(); }
 });
 bootstrap();
-
-// wow this is some shit code

@@ -6,8 +6,8 @@ Last updated: 2026-07-19
 
 Forma is now a working local-first receivables workspace, not a static invoice mockup. It supports invoices, quotes, and receipts through one durable SQLite document ledger with PDF output, lifecycle controls, configurable identity, reusable templates, and a responsive application shell.
 
-- Shared-document workflow milestone: approximately 90% complete.
-- Full hosted production SaaS brief: approximately 59% complete.
+- Shared-document workflow milestone: approximately 95% complete.
+- Full hosted production SaaS brief: approximately 61% complete.
 
 The second figure is deliberately lower: authentication, tenant isolation, real email and payment providers, secure object storage, scheduled work, and production operations require external infrastructure and credentials that are not present in this local environment.
 
@@ -38,6 +38,7 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Quick Create deterministic parser for document type, customer, currencies, dates/terms, quantities, item prices, VAT/discount, and unknown segments. Parsed data is reviewed before document creation.
 - Live A4-style paper preview with supplier identity, logo URL support, branding accent, footer, signature, payment details, and type-aware copy.
 - Responsive behavior: document preview becomes on-demand at mobile widths and the editor remains free of horizontal overflow at 390px.
+- Unified authoring workflow: every invoice, quote, and receipt creation/open/duplicate entry point now converges on the shared document editor. It includes saved-client and saved-product pickers, inline record creation, payment-term shortcuts, payment method selection, notes, attachments, templates, live preview, keyboard save, and convergent debounced autosave. Adding a saved product replaces the pristine starter line instead of leaving an invalid empty row.
 
 ### Settings and delivery
 
@@ -62,7 +63,7 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Business logos are stored in the local upload directory with content-signature validation and referenced by an asset endpoint. Image transformation, malware scanning, tenant-scoped private storage, and signed URLs remain for hosted production.
 - Supporting-document attachments upload from both invoice entry flows. PDFs and supported images are signature-checked, stored in the local upload directory, listed on drafts, served through asset URLs, and removable before issue. Signed downloads, malware scanning, and tenant-scoped object storage remain for hosted production.
 - Browser preview is a faithful local paper view; PDF is generated server-side from the same document/template selection but is not pixel-identical by design.
-- The original invoice composer and shared editor still have some duplicated presentation code. They share the durable document model, but should be consolidated into one renderer in a later maintenance pass.
+- The legacy invoice API compatibility routes remain for existing integrations, but the SPA no longer exposes or initializes a separate invoice composer. They can be deprecated after external clients migrate to `/api/documents`.
 - Email templates and delivery history are functional locally, but the active provider defaults to `mock`; real provider adapters, verified domains, webhooks, and bounce handling remain absent.
 - Dashboard/reporting uses local ledger data; forecasting, formal tax reports, customer portals, automated hosted schedule execution, and background worker execution are not implemented.
 - No authentication or tenancy layer exists. Sensitive-payment retrieval caveats are explicitly documented in API responses for this local no-auth service.
@@ -108,11 +109,11 @@ Live local verification was completed at `http://127.0.0.1:4179`:
 - CSV export coverage verifies the download response, invoice filtering, document columns, and spreadsheet-formula neutralization for client-entered text.
 - The logo upload API was exercised by automated coverage for PNG signature validation, persisted asset retrieval, business-profile reuse, and malformed-image rejection. The same suite verifies draft-PDF attachment upload, document persistence, download, deletion, and asset cleanup. The Settings screen exposes logo file selection, upload, preview, and removal.
 - Mobile `390x844` verification showed no horizontal overflow and the sticky paper preview correctly moved off the editor canvas.
+- Unified-editor browser verification (2026-07-19) confirmed that the global New invoice action opens the shared editor, a saved client populates complete billing details, a saved product replaces the pristine starter row, Net 14 recalculates the due date, debounced autosave survives a full reload, and no browser console/page errors are emitted.
 
 ## Next priorities
 
-1. Consolidate the generic quote/invoice/receipt editor so it has the same customer picker, product picker, terms, payment selection, notes, and attachment ergonomics as the invoice composer.
-2. Add Supabase Auth, workspaces, roles, tenant-safe Postgres persistence, private Storage buckets, and RLS before exposing the service outside a trusted local environment.
-3. Complete Resend production delivery with verified-domain configuration, webhook processing, retries, bounce handling, and scheduled reminder execution.
-4. Add Stripe and PayPal payment links, provider webhooks, reconciliation, and a customer payment portal.
-5. Add CI, deployment environments, monitoring, rate limits, audit retention/recovery, tax exports, analytics, and formal CSV/PDF reports.
+1. Add Supabase Auth, workspaces, roles, tenant-safe Postgres persistence, private Storage buckets, and RLS before exposing the service outside a trusted local environment.
+2. Complete Resend production delivery with verified-domain configuration, webhook processing, retries, bounce handling, and scheduled reminder execution.
+3. Add Stripe and PayPal payment links, provider webhooks, reconciliation, and a customer payment portal.
+4. Add CI, deployment environments, monitoring, rate limits, audit retention/recovery, tax exports, analytics, and formal CSV/PDF reports.
