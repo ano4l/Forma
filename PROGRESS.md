@@ -57,6 +57,8 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Tests for money calculations, per-rate tax breakdowns, persistence, immutable snapshots, readiness, audit events, legacy migration, independent numbering, quote conversion, partial payments/receipts, payment masking, parser behavior, template/PDF combinations, and idempotent mock sends.
 - Branding release pass: the Forma logo is a tracked browser asset, generated PDFs resolve the document's managed PNG/JPEG logo or a safe inline PNG/JPEG and fall back to the packaged Forma logo, and email attachments use the same resolver. Automated coverage proves browser asset rendering, custom-logo embedding in PDF output, and lossless migration of the legacy default business identity.
 - `FORMA_DB`, `FORMA_UPLOAD_DIR`, and `FORMA_*` email configuration names are now preferred while the matching legacy `MONEYFY_*` names remain supported for existing deployments.
+- Hosted security foundation: a Supabase migration now creates Auth profiles, workspaces, invitations, owner/admin/member/viewer memberships, immutable tenant keys, composite tenant foreign keys, RLS on every business table, owner-protection triggers, tenant-scoped numbering/natural keys, workspace RPCs, and a private `forma-private` Storage bucket with path-based membership policies.
+- Server Auth foundation: required mode verifies bearer tokens through Supabase Auth, resolves active workspace membership through RLS, rejects spoofed workspace IDs, exposes only publishable browser configuration, and refuses business-data access while the tenant-safe Postgres adapter is unavailable. Local SQLite mode remains explicitly disabled/optional for authentication.
 
 ## Partially complete
 
@@ -66,12 +68,13 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - The legacy invoice API compatibility routes remain for existing integrations, but the SPA no longer exposes or initializes a separate invoice composer. They can be deprecated after external clients migrate to `/api/documents`.
 - Email templates and delivery history are functional locally, but the active provider defaults to `mock`; real provider adapters, verified domains, webhooks, and bounce handling remain absent.
 - Dashboard/reporting uses local ledger data; forecasting, formal tax reports, customer portals, automated hosted schedule execution, and background worker execution are not implemented.
-- No authentication or tenancy layer exists. Sensitive-payment retrieval caveats are explicitly documented in API responses for this local no-auth service.
+- Supabase Auth and tenancy enforcement are implemented at the hosted schema and server boundary, but the browser sign-in/workspace-selection experience and the Postgres store adapter are still in progress. Required mode deliberately blocks business-data routes until that adapter is active.
+- Both Supabase migrations parse successfully with a PostgreSQL 17-compatible parser. The tenancy migration has not yet been applied to a real Supabase project because project credentials/linkage have not been supplied.
 
 ## Not started
 
-- Email/password, Google, and Microsoft authentication.
-- Workspaces, invitations, roles, permission policies, and tenant-scoped data isolation.
+- Browser email/password, Google, and Microsoft sign-in screens plus session refresh/logout.
+- Workspace invitation management UI and transactional invitation email delivery.
 - Hosted PostgreSQL/Supabase migration, RLS, backups, and production data migration.
 - Stripe/PayPal payments, webhooks, reconciliation, refunds, and hosted payment pages. The Resend email adapter is implemented but requires a verified sender, API key, provider credentials, and production webhook handling to be activated.
 - Secure object storage for attachments and uploaded logos.
@@ -89,7 +92,7 @@ npm test
 $env:PORT='4175'; npm start
 ```
 
-Latest verified result (2026-07-19): `20` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. The suite now also verifies the Forma browser logo route, custom uploaded-logo embedding in generated PDFs, and preservation of custom profile fields during the legacy branding migration.
+Latest verified result (2026-07-19): `23` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, workspace creation RPC forwarding, and structural tenant/RLS/Storage coverage of every hosted business table.
 
 Live local verification was completed at `http://127.0.0.1:4179`:
 

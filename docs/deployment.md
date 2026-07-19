@@ -23,9 +23,12 @@ FORMA_EMAIL_PROVIDER=resend
 FORMA_RESEND_API_KEY=...
 FORMA_EMAIL_FROM="Forma <billing@yourdomain.com>"
 SUPABASE_URL=...
-SUPABASE_ANON_KEY=...
+SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_DB_URL=...
+FORMA_AUTH_MODE=required
+FORMA_AUTH_PROVIDERS=email,google,azure
+FORMA_DATA_BACKEND=sqlite
 ```
 
 Important: Vercel function storage is ephemeral. Use this Vercel target for preview/demo deployments until the SQLite store is replaced by the Supabase/Postgres adapter, or deploy production on Railway with a persistent volume/database.
@@ -47,7 +50,9 @@ supabase db push
 
 The schema mirrors the current document ledger: customers, products, documents, payments, templates, delivery attempts, reminder policies, recurring invoices, media metadata, settings, and audit history.
 
-Security note: RLS/auth policies are intentionally not enabled yet because the current app is still local/no-auth. Before public multi-tenant production, add Supabase Auth, workspace ownership columns, RLS policies, and server-side authorization checks.
+The `20260719000000_auth_workspaces_rls.sql` migration enables Supabase Auth-backed workspaces, owner/admin/member/viewer roles, tenant columns, composite tenant foreign keys, RLS, workspace RPCs, and private Storage policies. It fails closed if existing hosted rows have no assigned workspace.
+
+Server authentication is also fail-closed: required mode verifies access tokens against Supabase Auth, loads active memberships through RLS, and rejects spoofed workspace headers. Business-data routes remain unavailable until the Supabase Postgres store adapter replaces SQLite and `FORMA_DATA_BACKEND=supabase` is deliberately enabled.
 
 ## Resend
 

@@ -8,7 +8,7 @@
     "node": ">=22 <25"
   },
   "scripts": {
-    "build": "node --check app.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check parser.js && node --check pdf.js && node --check templates.js",
+    "build": "node --check app.js && node --check auth.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check parser.js && node --check pdf.js && node --check templates.js",
     "dev": "node --watch server.js",
     "start": "node server.js",
     "test": "node --test"

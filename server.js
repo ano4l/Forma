@@ -8,6 +8,7 @@ import { createDocumentPdf, renderDocumentPdf } from "./pdf.js";
 import { parseQuickCreate } from "./parser.js";
 import { listTemplates } from "./templates.js";
 import { emailProviderStatus, sendTransactionalEmail } from "./email-provider.js";
+import { createAuthMiddleware, resolveAuthConfig } from "./auth.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BRAND_LOGO = "VKT-logo.png";
@@ -44,12 +45,16 @@ function attachmentInfo(buffer, contentType) {
   return imageInfo(buffer, contentType);
 }
 
-export function createApp({ database = process.env.FORMA_DB || process.env.MONEYFY_DB || path.join(root, "moneyfy.sqlite"), uploadDir = process.env.FORMA_UPLOAD_DIR || process.env.MONEYFY_UPLOAD_DIR || path.join(root, "uploads"), staticRoot = root } = {}) {
+export function createApp({ database = process.env.FORMA_DB || process.env.MONEYFY_DB || path.join(root, "moneyfy.sqlite"), uploadDir = process.env.FORMA_UPLOAD_DIR || process.env.MONEYFY_UPLOAD_DIR || path.join(root, "uploads"), staticRoot = root, dataBackend = process.env.FORMA_DATA_BACKEND || "sqlite", authOptions = {} } = {}) {
   const app = express();
   const store = createStore(database);
   app.locals.store = store;
   app.use(express.json({ limit: "1mb" }));
   const route = (handler) => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
+  const authMiddleware = createAuthMiddleware({ config: authOptions.config || resolveAuthConfig(), fetchImpl: authOptions.fetchImpl || globalThis.fetch });
+  app.locals.authConfig = authMiddleware.publicConfig;
+  app.locals.dataBackend = dataBackend;
+  app.locals.tenantStoreReady = false;
   const found = (document, label = "Document") => { if (!document) throw Object.assign(new Error(`${label} not found`), { status: 404, code: "NOT_FOUND" }); return document; };
   const safeAssetPath = (asset) => {
     const target = path.resolve(uploadDir, asset.storage_key);
@@ -85,7 +90,25 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
     return store.completeDocumentEmail(documentId, started.attempt.id, delivery);
   }
 
-  app.get("/api/health", (req, res) => res.json({ ok: true, email: emailProviderStatus() }));
+  app.get("/api/health", (req, res) => res.json({ ok: true, email: emailProviderStatus(), auth: { mode: authMiddleware.publicConfig.mode, configured: authMiddleware.publicConfig.configured }, data_backend: dataBackend }));
+  app.get("/api/auth/config", (req, res) => res.json({ data: authMiddleware.publicConfig }));
+  app.use("/api", authMiddleware);
+  app.get("/api/session", (req, res) => res.json({ data: { authenticated: Boolean(req.auth), user: req.auth?.user || null, memberships: req.auth?.memberships || [], workspace_id: req.auth?.workspaceId || null, role: req.auth?.role || null } }));
+  app.post("/api/workspaces", route(async (req, res) => {
+    if (!req.auth) throw Object.assign(new Error("Sign in to create a workspace"), { status: 401, code: "AUTHENTICATION_REQUIRED" });
+    const name = String(req.body?.name || "").trim(); const slug = String(req.body?.slug || "").trim().toLowerCase();
+    if (name.length < 2 || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(slug)) throw Object.assign(new Error("Enter a workspace name and a valid slug"), { status: 422, code: "VALIDATION_ERROR" });
+    const result = await req.auth.supabaseFetch("/rest/v1/rpc/create_workspace", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ workspace_name: name, workspace_slug: slug }) });
+    const payload = await result.json().catch(() => null);
+    if (!result.ok) throw Object.assign(new Error(payload?.message || "Workspace could not be created"), { status: result.status, code: "WORKSPACE_CREATE_FAILED" });
+    res.status(201).json({ data: Array.isArray(payload) ? payload[0] : payload });
+  }));
+  app.use("/api", (req, res, next) => {
+    if (authMiddleware.publicConfig.mode !== "required") return next();
+    if (!req.auth?.workspaceId) return res.status(409).json({ error: { code: "WORKSPACE_REQUIRED", message: "Select or create a workspace to continue" } });
+    if (dataBackend !== "supabase" || !app.locals.tenantStoreReady) return res.status(503).json({ error: { code: "TENANT_STORE_NOT_CONFIGURED", message: "Tenant-safe Supabase persistence must be enabled before authenticated data access" } });
+    return next();
+  });
 
   app.post("/api/business-logo", express.raw({ type: ["image/png", "image/jpeg", "image/webp", "image/svg+xml"], limit: MAX_LOGO_BYTES }), route(async (req, res) => {
     const info = imageInfo(req.body, req.get("content-type")?.split(";")[0].trim().toLowerCase());
