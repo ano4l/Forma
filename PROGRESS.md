@@ -7,7 +7,7 @@ Last updated: 2026-07-19
 Forma is now a working local-first receivables workspace, not a static invoice mockup. It supports invoices, quotes, and receipts through one durable SQLite document ledger with PDF output, lifecycle controls, configurable identity, reusable templates, and a responsive application shell.
 
 - Shared-document workflow milestone: approximately 95% complete.
-- Full hosted production SaaS brief: approximately 61% complete.
+- Full hosted production SaaS brief: approximately 65% complete.
 
 The second figure is deliberately lower: authentication, tenant isolation, real email and payment providers, secure object storage, scheduled work, and production operations require external infrastructure and credentials that are not present in this local environment.
 
@@ -59,6 +59,7 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - `FORMA_DB`, `FORMA_UPLOAD_DIR`, and `FORMA_*` email configuration names are now preferred while the matching legacy `MONEYFY_*` names remain supported for existing deployments.
 - Hosted security foundation: a Supabase migration now creates Auth profiles, workspaces, invitations, owner/admin/member/viewer memberships, immutable tenant keys, composite tenant foreign keys, RLS on every business table, owner-protection triggers, tenant-scoped numbering/natural keys, workspace RPCs, and a private `forma-private` Storage bucket with path-based membership policies.
 - Server Auth foundation: required mode verifies bearer tokens through Supabase Auth, resolves active workspace membership through RLS, rejects spoofed workspace IDs, exposes only publishable browser configuration, and refuses business-data access while the tenant-safe Postgres adapter is unavailable. Local SQLite mode remains explicitly disabled/optional for authentication.
+- Browser Auth and onboarding: email/password sign-up and sign-in, hosted email-confirmation handling, Google and Microsoft OAuth redirects, fragment-session capture, durable refresh-token sessions, automatic access-token renewal, logout, workspace creation/selection, authenticated API headers, tenant headers, and authenticated PDF/CSV/file transfer requests. The unchanged disabled-auth path still opens the local SQLite workspace directly.
 
 ## Partially complete
 
@@ -68,12 +69,11 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - The legacy invoice API compatibility routes remain for existing integrations, but the SPA no longer exposes or initializes a separate invoice composer. They can be deprecated after external clients migrate to `/api/documents`.
 - Email templates and delivery history are functional locally, but the active provider defaults to `mock`; real provider adapters, verified domains, webhooks, and bounce handling remain absent.
 - Dashboard/reporting uses local ledger data; forecasting, formal tax reports, customer portals, automated hosted schedule execution, and background worker execution are not implemented.
-- Supabase Auth and tenancy enforcement are implemented at the hosted schema and server boundary, but the browser sign-in/workspace-selection experience and the Postgres store adapter are still in progress. Required mode deliberately blocks business-data routes until that adapter is active.
+- Supabase Auth and tenancy enforcement are implemented at the hosted schema, server, and browser boundaries, but the Postgres store adapter is still in progress. Required mode deliberately blocks business-data routes until that adapter is active. Live Google/Microsoft and confirmation-email verification awaits project/provider credentials.
 - Both Supabase migrations parse successfully with a PostgreSQL 17-compatible parser. The tenancy migration has not yet been applied to a real Supabase project because project credentials/linkage have not been supplied.
 
 ## Not started
 
-- Browser email/password, Google, and Microsoft sign-in screens plus session refresh/logout.
 - Workspace invitation management UI and transactional invitation email delivery.
 - Hosted PostgreSQL/Supabase migration, RLS, backups, and production data migration.
 - Stripe/PayPal payments, webhooks, reconciliation, refunds, and hosted payment pages. The Resend email adapter is implemented but requires a verified sender, API key, provider credentials, and production webhook handling to be activated.
@@ -92,7 +92,7 @@ npm test
 $env:PORT='4175'; npm start
 ```
 
-Latest verified result (2026-07-19): `23` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, workspace creation RPC forwarding, and structural tenant/RLS/Storage coverage of every hosted business table.
+Latest verified result (2026-07-19): `27` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, workspace creation RPC forwarding, session persistence and refresh, confirmation-required sign-up, OAuth callback capture, logout, and structural tenant/RLS/Storage coverage of every hosted business table.
 
 Live local verification was completed at `http://127.0.0.1:4179`:
 
@@ -113,10 +113,11 @@ Live local verification was completed at `http://127.0.0.1:4179`:
 - The logo upload API was exercised by automated coverage for PNG signature validation, persisted asset retrieval, business-profile reuse, and malformed-image rejection. The same suite verifies draft-PDF attachment upload, document persistence, download, deletion, and asset cleanup. The Settings screen exposes logo file selection, upload, preview, and removal.
 - Mobile `390x844` verification showed no horizontal overflow and the sticky paper preview correctly moved off the editor canvas.
 - Unified-editor browser verification (2026-07-19) confirmed that the global New invoice action opens the shared editor, a saved client populates complete billing details, a saved product replaces the pristine starter row, Net 14 recalculates the due date, debounced autosave survives a full reload, and no browser console/page errors are emitted.
+- Post-auth integration browser regression (2026-07-19) confirmed that disabled-auth local mode still opens the existing Documents workspace and ledger with no page errors. Provider-backed live sign-in remains pending until the Supabase project and OAuth credentials are supplied.
 
 ## Next priorities
 
-1. Add Supabase Auth, workspaces, roles, tenant-safe Postgres persistence, private Storage buckets, and RLS before exposing the service outside a trusted local environment.
+1. Implement the tenant-safe Supabase/Postgres store and private Storage adapters, apply the migrations to the supplied project, and run cross-workspace RLS integration tests before exposing the service outside a trusted local environment.
 2. Complete Resend production delivery with verified-domain configuration, webhook processing, retries, bounce handling, and scheduled reminder execution.
 3. Add Stripe and PayPal payment links, provider webhooks, reconciliation, and a customer payment portal.
 4. Add CI, deployment environments, monitoring, rate limits, audit retention/recovery, tax exports, analytics, and formal CSV/PDF reports.

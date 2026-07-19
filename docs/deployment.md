@@ -54,6 +54,18 @@ The `20260719000000_auth_workspaces_rls.sql` migration enables Supabase Auth-bac
 
 Server authentication is also fail-closed: required mode verifies access tokens against Supabase Auth, loads active memberships through RLS, and rejects spoofed workspace headers. Business-data routes remain unavailable until the Supabase Postgres store adapter replaces SQLite and `FORMA_DATA_BACKEND=supabase` is deliberately enabled.
 
+### Auth dashboard setup
+
+The browser includes email/password registration and sign-in, Google and Microsoft (`azure`) OAuth, automatic access-token refresh, logout, workspace creation, and workspace selection. To activate it:
+
+1. In **Authentication → URL Configuration**, set the production app origin as the Site URL and add the exact production, staging, and local app URLs to Redirect URLs. Forma returns social sign-ins to the current app URL and consumes the session from the URL fragment.
+2. Keep email/password enabled. Hosted Supabase projects normally require email confirmation; the confirmation link returns to the current Forma path.
+3. Enable Google and Azure in **Authentication → Providers** and add each provider's client credentials. Keep `FORMA_AUTH_PROVIDERS` aligned with the providers actually enabled.
+4. Use only `SUPABASE_PUBLISHABLE_KEY` in browser-visible configuration. Never expose a service-role key to the browser.
+5. Configure production SMTP for Auth confirmation and invitation messages before launch; Supabase's trial sender is not a production delivery channel.
+
+References: [Supabase redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls), [password authentication](https://supabase.com/docs/guides/auth/passwords), and [implicit browser sessions](https://supabase.com/docs/guides/auth/sessions/implicit-flow).
+
 ## Resend
 
 The app already uses a provider abstraction in `email-provider.js`.

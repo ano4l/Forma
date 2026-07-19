@@ -1,9 +1,16 @@
+import { SupabaseBrowserAuth } from "./supabase-browser.js";
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
 
 const state = { route: location.hash.slice(1) || "documents", invoices: [], customers: [], products: [], current: null, audit: [], customerQuery: "", productQuery: "", invoiceQuery: "", invoiceStatus: "all", saveTimer: null, savePromise: null, editRevision: 0, savedRevision: 0, saving: false, saveError: false, touched: new Set(), expandedLines: new Set(), documents: [], document: null, templates: [], profile: {}, paymentMethods: [], emailTemplates: [], brandingPresets: [], numberPrefixes: {}, settingsEmailPurpose: "", documentQuery: "", documentType: "all", documentCustomerQuery: "", documentProductQuery: "", quickText: "", quickParsed: null, documentSaving: false, documentSaveError: false, documentSaveTimer: null, documentSavePromise: null, documentEditRevision: 0, documentSavedRevision: 0, documentEmailHistory: [], documentUndo: null, recurringSchedules: [], reminderRules: [], dueReminders: [] };
+const WORKSPACE_KEY = "forma.active.workspace.v1";
+let authConfig = { mode: "disabled", configured: false, providers: [] };
+let browserAuth = null;
+let hostedSession = null;
+let authScreenMode = "signin";
 const routes = [
   ["dashboard", "grid", "Dashboard", "Workspace"],
   ["documents", "file", "Documents", "Workspace"],
@@ -17,12 +24,37 @@ const routes = [
   ["settings", "settings", "Settings", "System"]
 ];
 
+async function authorizedFetch(path, { skipWorkspace = false, ...options } = {}) {
+  const token = await browserAuth?.accessToken();
+  const headers = { ...(options.headers || {}) };
+  if (!headers["Content-Type"] && typeof options.body === "string") headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const workspaceId = localStorage.getItem(WORKSPACE_KEY);
+  if (token && workspaceId && !skipWorkspace) headers["X-Workspace-Id"] = workspaceId;
+  return fetch(path, { ...options, headers });
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
+  const response = await authorizedFetch(path, options);
   const type = response.headers.get("content-type") || "";
   const payload = type.includes("json") ? await response.json() : null;
   if (!response.ok) { const error = new Error(payload?.error?.message || `Request failed (${response.status})`); error.details = payload?.error?.details; error.status = response.status; throw error; }
   return payload?.data ?? payload;
+}
+
+async function openAuthorizedResource(path, { download = false } = {}) {
+  const pendingWindow = download ? null : window.open("", "_blank");
+  try {
+    const response = await authorizedFetch(path);
+    if (!response.ok) throw new Error(`Download failed (${response.status})`);
+    const blobUrl = URL.createObjectURL(await response.blob());
+    if (download) {
+      const disposition = response.headers.get("content-disposition") || "";
+      const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "forma-export";
+      const link = document.createElement("a"); link.href = blobUrl; link.download = filename; link.click();
+    } else if (pendingWindow) pendingWindow.location = blobUrl;
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  } catch (error) { pendingWindow?.close(); toast(error.message, "error"); }
 }
 
 const money = (minor = 0, currency = state.document?.data?.currency || state.current?.data?.currency || "ZAR") => new Intl.NumberFormat("en-ZA", { style: "currency", currency, minimumFractionDigits: 2 }).format(minor / 100);
@@ -551,7 +583,7 @@ async function uploadDocumentAttachment() {
   if (!file || !state.document) return toast("Choose an attachment first", "error");
   try {
     if (state.document.status === "draft") await saveDocument({ quiet: true });
-    const response = await fetch(`/api/documents/${state.document.id}/attachments`, { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
+    const response = await authorizedFetch(`/api/documents/${state.document.id}/attachments`, { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || `Attachment upload failed (${response.status})`);
     state.document = payload.data.document; render(); toast("Attachment uploaded");
@@ -566,7 +598,7 @@ async function uploadInvoiceAttachment() {
   const file = $("#invoiceAttachmentFile")?.files?.[0];
   if (!file || !state.current) return toast("Choose an attachment first", "error");
   try {
-    const response = await fetch(`/api/documents/${state.current.id}/attachments`, { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
+    const response = await authorizedFetch(`/api/documents/${state.current.id}/attachments`, { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || `Attachment upload failed (${response.status})`);
     state.current = payload.data.document; await refreshLists(); render(); toast("Attachment uploaded");
@@ -692,7 +724,7 @@ async function uploadProfileLogo() {
   const file = $("#profileLogoFile")?.files?.[0];
   if (!file) return toast("Choose a logo file first", "error");
   try {
-    const response = await fetch("/api/business-logo", { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
+    const response = await authorizedFetch("/api/business-logo", { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || `Logo upload failed (${response.status})`);
     state.profile = payload.data.profile; render(); toast("Business logo uploaded");
@@ -756,6 +788,8 @@ async function toggleReminderRule(id) {
 }
 
 function bindPage() {
+  $$('[data-sign-out]').forEach((el) => el.onclick = signOut);
+  $$('[data-switch-workspace]').forEach((el) => el.onclick = () => renderWorkspaceChooser(hostedSession));
   $$('[data-route]').forEach((el) => el.onclick = async () => { if (state.document?.status === "draft") await saveDocument({ quiet: true }); setRoute(el.dataset.route); });
   $$('[data-new-invoice]').forEach((el) => el.onclick = () => createDocument("invoice"));
   $$('[data-quick-route]').forEach((el) => el.onclick = () => setRoute("quick-create"));
@@ -768,11 +802,11 @@ function bindPage() {
   $$('[data-run-reminders]').forEach((el) => el.onclick = runDueReminders);
   $$('[data-refresh-reminders]').forEach((el) => el.onclick = async () => { await refreshReminders(); render(); toast("Reminder queue refreshed"); });
   $$('[data-toggle-reminder-rule]').forEach((el) => el.onclick = () => toggleReminderRule(el.dataset.toggleReminderRule));
-  $$('[data-export-receivables]').forEach((el) => el.onclick = () => { window.location.assign("/api/exports/receivables.csv"); });
+  $$('[data-export-receivables]').forEach((el) => el.onclick = () => openAuthorizedResource("/api/exports/receivables.csv", { download: true }));
   $$('[data-open-document]').forEach((el) => el.onclick = () => openDocument(el.dataset.openDocument));
   $$('[data-document-action]').forEach((el) => el.onclick = () => runDocumentAction(el.dataset.documentAction));
   $$('[data-retry-document-email]').forEach((el) => el.onclick = openEmailCompose);
-  $$('[data-document-pdf]').forEach((el) => el.onclick = () => window.open(`/api/documents/${state.document.id}/pdf`, "_blank"));
+  $$('[data-document-pdf]').forEach((el) => el.onclick = () => openAuthorizedResource(`/api/documents/${state.document.id}/pdf`));
   $$('[data-save-document]').forEach((el) => el.onclick = () => saveDocument({ quiet: false }));
   $$('[data-add-document-line]').forEach((el) => el.onclick = addDocumentLine);
   $$('[data-select-document-customer]').forEach((el) => el.onclick = () => selectDocumentCustomer(el.dataset.selectDocumentCustomer));
@@ -798,8 +832,8 @@ function bindPage() {
   $$('[data-save-prefixes]').forEach((el) => el.onclick = saveNumberPrefixes);
   $$('[data-save-email-template]').forEach((el) => el.onclick = saveEmailTemplate);
   $$('[data-open-invoice]').forEach((el) => el.onclick = () => openDocument(el.dataset.openInvoice));
-  $$('[data-download]').forEach((el) => el.onclick = () => window.open(`/api/invoices/${state.current.id}/pdf`, "_blank"));
-  $$('[data-fullscreen-preview]').forEach((el) => el.onclick = () => window.open(`/api/invoices/${state.current.id}/pdf`, "_blank"));
+  $$('[data-download]').forEach((el) => el.onclick = () => openAuthorizedResource(`/api/invoices/${state.current.id}/pdf`));
+  $$('[data-fullscreen-preview]').forEach((el) => el.onclick = () => openAuthorizedResource(`/api/invoices/${state.current.id}/pdf`));
   $$('[data-save]').forEach((el) => el.onclick = async () => { await saveDraft(); toast("Draft saved"); });
   $$('[data-review]').forEach((el) => el.onclick = openReview);
   $$('[data-preview]').forEach((el) => el.onclick = openPreview);
@@ -935,6 +969,105 @@ async function bootstrap() {
   } catch (error) { $("#content").innerHTML = `<div class="error-state"><div><h2>Could not open VirtuKey Forma</h2><p>${escapeHtml(error.message)}</p><button class="btn primary" onclick="location.reload()">Try again</button></div></div>`; }
 }
 
+function showAuthGate(markup) {
+  const gate = $("#authGate");
+  gate.innerHTML = markup; gate.hidden = false;
+  $("#app").hidden = true;
+  document.body.classList.add("auth-pending");
+}
+
+function showAppShell() {
+  $("#authGate").hidden = true;
+  $("#app").hidden = false;
+  document.body.classList.remove("auth-pending");
+}
+
+const authCard = (content, aside = "") => `<div class="auth-layout"><section class="auth-card"><a class="auth-brand" href="/" aria-label="Forma home"><img src="/VKT-logo.png" alt=""><span><strong>Forma</strong><small>Invoice workspace</small></span></a>${content}</section><aside class="auth-aside"><span class="auth-kicker">Receivables, without the busywork</span><h2>Create, send, and track every document from one secure workspace.</h2><p>Invoices, quotes, receipts, reminders, and payments stay connected from first draft to final settlement.</p>${aside}</aside></div>`;
+
+function authProviderButtons() {
+  const names = { google: "Google", azure: "Microsoft" };
+  return (authConfig.providers || []).filter((provider) => names[provider]).map((provider) => `<button class="btn auth-provider" type="button" data-auth-provider="${provider}">Continue with ${names[provider]}</button>`).join("");
+}
+
+function renderAuthScreen(message = "") {
+  const signingUp = authScreenMode === "signup";
+  showAuthGate(authCard(`<div class="auth-copy"><span class="eyebrow">Secure workspace</span><h1>${signingUp ? "Create your Forma account" : "Welcome back"}</h1><p>${signingUp ? "Start a workspace for your team and billing records." : "Sign in to continue to your documents."}</p></div>${message ? `<div class="auth-message">${escapeHtml(message)}</div>` : ""}<form id="authForm" class="auth-form"><div class="field"><label for="authEmail">Email address</label><div class="input-wrap"><input id="authEmail" name="email" type="email" autocomplete="email" required></div></div><div class="field"><label for="authPassword">Password</label><div class="input-wrap"><input id="authPassword" name="password" type="password" autocomplete="${signingUp ? "new-password" : "current-password"}" minlength="8" required></div></div><button class="btn primary auth-submit" type="submit">${signingUp ? "Create account" : "Sign in"}</button></form>${authProviderButtons() ? `<div class="auth-divider"><span>or</span></div><div class="auth-providers">${authProviderButtons()}</div>` : ""}<p class="auth-switch">${signingUp ? "Already have an account?" : "New to Forma?"} <button type="button" data-auth-screen="${signingUp ? "signin" : "signup"}">${signingUp ? "Sign in" : "Create an account"}</button></p>`));
+  $("#authForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const submit = $(".auth-submit"); submit.disabled = true; submit.textContent = signingUp ? "Creating account..." : "Signing in...";
+    try {
+      const email = $("#authEmail").value.trim(); const password = $("#authPassword").value;
+      const result = signingUp ? await browserAuth.signUp(email, password) : await browserAuth.signIn(email, password);
+      if (result?.confirmation_required) { authScreenMode = "signin"; return renderAuthScreen("Check your email to confirm your account, then sign in."); }
+      await loadHostedSession();
+    } catch (error) { renderAuthScreen(error.message); }
+  };
+  $$('[data-auth-provider]').forEach((button) => button.onclick = () => location.assign(browserAuth.oauthUrl(button.dataset.authProvider)));
+  $$('[data-auth-screen]').forEach((button) => button.onclick = () => { authScreenMode = button.dataset.authScreen; renderAuthScreen(); });
+}
+
+function workspaceFromMembership(membership) { return membership?.workspaces || { id: membership?.workspace_id, name: "Workspace", slug: "" }; }
+
+function renderWorkspaceChooser(session, message = "") {
+  const memberships = session?.memberships || [];
+  showAuthGate(authCard(`<div class="auth-copy"><span class="eyebrow">Choose workspace</span><h1>Where are you working?</h1><p>Your documents and settings remain isolated within the selected workspace.</p></div>${message ? `<div class="auth-message">${escapeHtml(message)}</div>` : ""}<div class="workspace-choices">${memberships.map((membership) => { const workspace = workspaceFromMembership(membership); return `<button type="button" class="workspace-choice" data-choose-workspace="${escapeHtml(membership.workspace_id)}"><span class="company-avatar">${escapeHtml(initials(workspace.name))}</span><span><strong>${escapeHtml(workspace.name)}</strong><small>${escapeHtml(membership.role)}${workspace.slug ? ` · ${escapeHtml(workspace.slug)}` : ""}</small></span>${icon("chevron")}</button>`; }).join("")}</div><div class="auth-actions"><button class="btn" type="button" data-new-workspace>Create another workspace</button><button class="link-btn" type="button" data-auth-logout>Sign out</button></div>`));
+  $$('[data-choose-workspace]').forEach((button) => button.onclick = async () => { localStorage.setItem(WORKSPACE_KEY, button.dataset.chooseWorkspace); await loadHostedSession(); });
+  $("[data-new-workspace]").onclick = () => renderWorkspaceOnboarding(session);
+  $("[data-auth-logout]").onclick = signOut;
+}
+
+function renderWorkspaceOnboarding(session = hostedSession, message = "") {
+  showAuthGate(authCard(`<div class="auth-copy"><span class="eyebrow">Workspace setup</span><h1>Create your workspace</h1><p>This becomes the secure home for your business documents and team.</p></div>${message ? `<div class="auth-message">${escapeHtml(message)}</div>` : ""}<form id="workspaceForm" class="auth-form"><div class="field"><label for="workspaceName">Workspace name</label><div class="input-wrap"><input id="workspaceName" autocomplete="organization" placeholder="Acme Finance" minlength="2" required></div></div><div class="field"><label for="workspaceSlug">Workspace URL slug</label><div class="input-wrap"><input id="workspaceSlug" pattern="[a-z0-9][a-z0-9-]{1,62}" placeholder="acme-finance" required></div><small>Lowercase letters, numbers, and hyphens.</small></div><button class="btn primary auth-submit" type="submit">Create workspace</button></form>${session?.memberships?.length ? `<button class="link-btn auth-back" type="button" data-back-workspaces>Back to workspaces</button>` : ""}`));
+  $("#workspaceName").oninput = (event) => { const slug = $("#workspaceSlug"); if (!slug.dataset.edited) slug.value = event.target.value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 63); };
+  $("#workspaceSlug").oninput = (event) => { event.target.dataset.edited = "true"; };
+  $("#workspaceForm").onsubmit = async (event) => {
+    event.preventDefault(); const submit = $(".auth-submit"); submit.disabled = true; submit.textContent = "Creating workspace...";
+    try { const workspace = await api("/api/workspaces", { method: "POST", body: JSON.stringify({ name: $("#workspaceName").value.trim(), slug: $("#workspaceSlug").value.trim() }) }); localStorage.setItem(WORKSPACE_KEY, workspace.id); await loadHostedSession(); }
+    catch (error) { renderWorkspaceOnboarding(session, error.message); }
+  };
+  $("[data-back-workspaces]") && ($("[data-back-workspaces]").onclick = () => renderWorkspaceChooser(session));
+}
+
+function decorateHostedShell(session) {
+  const selected = session.memberships.find((membership) => membership.workspace_id === session.workspace_id) || session.memberships.find((membership) => membership.workspace_id === localStorage.getItem(WORKSPACE_KEY));
+  const workspace = workspaceFromMembership(selected); const user = session.user || {};
+  $(".sidebar-foot").innerHTML = `<div class="company-avatar">${escapeHtml(initials(workspace.name))}</div><div><strong>${escapeHtml(workspace.name)}</strong><span>${escapeHtml(user.email || selected?.role || "Member")}</span></div><button class="icon-btn" data-sign-out aria-label="Sign out">${icon("x")}</button>`;
+  $(".api-status").innerHTML = `<i></i>${escapeHtml(workspace.name)}`;
+  if (session.memberships.length > 1) $(".sidebar-foot > div:nth-child(2)").setAttribute("data-switch-workspace", "");
+}
+
+async function signOut() {
+  await browserAuth?.signOut(); localStorage.removeItem(WORKSPACE_KEY); hostedSession = null; authScreenMode = "signin"; renderAuthScreen();
+}
+
+async function loadHostedSession() {
+  try {
+    let session = await api("/api/session", { skipWorkspace: true });
+    if (!session.authenticated) throw new Error("Sign in to continue");
+    hostedSession = session;
+    if (!session.memberships.length) return renderWorkspaceOnboarding(session);
+    let workspaceId = localStorage.getItem(WORKSPACE_KEY);
+    if (!session.memberships.some((membership) => membership.workspace_id === workspaceId)) workspaceId = session.memberships.length === 1 ? session.memberships[0].workspace_id : "";
+    if (!workspaceId) return renderWorkspaceChooser(session);
+    localStorage.setItem(WORKSPACE_KEY, workspaceId);
+    session = await api("/api/session"); hostedSession = session;
+    decorateHostedShell(session); showAppShell(); await bootstrap();
+  } catch (error) { browserAuth?.clearSession(); localStorage.removeItem(WORKSPACE_KEY); renderAuthScreen(error.message); }
+}
+
+async function initializeApplication() {
+  try {
+    const response = await fetch("/api/auth/config");
+    const payload = await response.json(); authConfig = payload.data || payload;
+    if (authConfig.mode === "disabled") { showAppShell(); return bootstrap(); }
+    if (!authConfig.configured) return showAuthGate(authCard(`<div class="auth-copy"><span class="eyebrow">Configuration required</span><h1>Forma Auth is not configured</h1><p>Add the Supabase URL and publishable key to the server environment, then restart the app.</p></div>`));
+    browserAuth = new SupabaseBrowserAuth(authConfig); browserAuth.consumeOAuthCallback();
+    const token = await browserAuth.accessToken();
+    if (!token) { if (authConfig.mode === "required") return renderAuthScreen(); showAppShell(); return bootstrap(); }
+    await loadHostedSession();
+  } catch (error) { showAuthGate(authCard(`<div class="auth-copy"><span class="eyebrow">Connection error</span><h1>Forma could not start</h1><p>${escapeHtml(error.message)}</p><button class="btn primary" onclick="location.reload()">Try again</button></div>`)); }
+}
+
 $("#menuBtn").onclick = () => { $("#sidebar").classList.add("open"); $("#scrim").classList.add("show"); };
 $("#scrim").onclick = () => { $("#sidebar").classList.remove("open"); $("#scrim").classList.remove("show"); };
 document.addEventListener("click", (event) => { if (event.target.closest("[data-close-sheet]")) closeSheet(); });
@@ -944,4 +1077,4 @@ window.addEventListener("keydown", (event) => {
   if (command && event.key.toLowerCase() === "s" && state.route === "document-editor" && state.document?.status === "draft") { event.preventDefault(); saveDocument({ quiet: false }); }
   if (event.key === "Escape") { closeSheet(); if ($("#modal").open) $("#modal").close(); }
 });
-bootstrap();
+initializeApplication();

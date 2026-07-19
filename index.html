@@ -8,9 +8,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=25">
+  <link rel="stylesheet" href="/styles.css?v=26">
 </head>
 <body>
+  <main id="authGate" class="auth-gate" hidden></main>
   <svg class="sprite" aria-hidden="true">
     <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></symbol>
@@ -52,6 +53,6 @@
   <div class="toast-region" id="toasts" aria-live="polite"></div>
   <dialog id="modal" class="modal"><form method="dialog"><button class="icon-btn modal-close" value="cancel" aria-label="Close"><svg><use href="#i-x"/></svg></button><div id="modalContent"></div></form></dialog>
   <div class="sheet" id="sheet" aria-hidden="true"><div class="sheet-backdrop" data-close-sheet aria-hidden="true"></div><section class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"><div class="sheet-head"><strong id="sheetTitle">Invoice preview</strong><button class="icon-btn" data-close-sheet aria-label="Close invoice panel"><svg><use href="#i-x"/></svg></button></div><div class="sheet-body" id="sheetBody"></div></section></div>
-  <script type="module" src="/app.js?v=25"></script>
+  <script type="module" src="/app.js?v=26"></script>
 </body>
 </html>
