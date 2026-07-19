@@ -11,6 +11,8 @@ let authConfig = { mode: "disabled", configured: false, providers: [] };
 let browserAuth = null;
 let hostedSession = null;
 let authScreenMode = "signin";
+const authorizedAssetUrls = new Map();
+const canWriteWorkspace = () => !hostedSession || hostedSession.role !== "viewer";
 const routes = [
   ["dashboard", "grid", "Dashboard", "Workspace"],
   ["documents", "file", "Documents", "Workspace"],
@@ -56,6 +58,14 @@ async function openAuthorizedResource(path, { download = false } = {}) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   } catch (error) { pendingWindow?.close(); toast(error.message, "error"); }
 }
+
+function renderAssetUrl(url) { return authorizedAssetUrls.get(String(url || "")) || String(url || ""); }
+async function hydrateAuthorizedAsset(url) {
+  const path = String(url || ""); if (!browserAuth || !path.startsWith("/api/assets/") || authorizedAssetUrls.has(path)) return;
+  const response = await authorizedFetch(path); if (!response.ok) return;
+  authorizedAssetUrls.set(path, URL.createObjectURL(await response.blob()));
+}
+function clearAuthorizedAssets() { for (const url of authorizedAssetUrls.values()) URL.revokeObjectURL(url); authorizedAssetUrls.clear(); }
 
 const money = (minor = 0, currency = state.document?.data?.currency || state.current?.data?.currency || "ZAR") => new Intl.NumberFormat("en-ZA", { style: "currency", currency, minimumFractionDigits: 2 }).format(minor / 100);
 const dateLabel = (value) => value ? new Intl.DateTimeFormat("en-ZA", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T12:00:00`)) : "Not set";
@@ -120,7 +130,7 @@ function renderInvoice() {
   if (!state.current) return `<div class="loading-state"><span class="spinner"></span><strong>Loading draft</strong></div>`;
   const invoice = state.current;
   const data = invoice.data;
-  const locked = invoice.status !== "draft";
+  const locked = invoice.status !== "draft" || !canWriteWorkspace();
   const totals = localTotals();
   const checks = clientReadyChecks();
   const done = checks.filter((item) => item.complete).length;
@@ -207,7 +217,7 @@ function readinessMarkup(checks, done) { const ready = done === checks.length; r
 function paperMarkup(data, totals) {
   const customer = data.customer || {};
   const supplier = data.supplier || {};
-  const logoUrl = String(supplier.logo_url || state.profile.logo_url || "/VKT-logo.png").trim();
+  const logoUrl = renderAssetUrl(String(supplier.logo_url || state.profile.logo_url || "/VKT-logo.png").trim());
   const logoMarkup = logoUrl && /^(https?:\/\/|data:image\/|\/)/i.test(logoUrl)
     ? `<img src="${escapeHtml(logoUrl)}" alt="" class="paper-logo-image" style="height:100%; width:100%; object-fit:contain;">`
     : escapeHtml((supplier.name || "F").slice(0, 1).toUpperCase());
@@ -291,7 +301,7 @@ function genericPaperMarkup(document) {
   const totals = genericTotals(data);
   const label = documentTypeLabel(document.document_type);
   const dateLabelText = document.document_type === "quote" ? "Valid until" : document.document_type === "receipt" ? "Payment date" : "Due date";
-  const logoUrl = String(data.supplier?.logo_url || state.profile.logo_url || "/VKT-logo.png").trim();
+  const logoUrl = renderAssetUrl(String(data.supplier?.logo_url || state.profile.logo_url || "/VKT-logo.png").trim());
   const mark = logoUrl && /^(https?:\/\/|data:image\/|\/)/i.test(logoUrl) ? `<img class="generic-paper-logo-image" src="${escapeHtml(logoUrl)}" alt="">` : escapeHtml((data.supplier?.name || "F").slice(0, 1));
   return `<div class="generic-paper template-${escapeHtml(template.id)}" style="--document-accent:${escapeHtml(data.accent || template.accent || "#7f56d9")}">
     <div class="generic-paper-head"><div class="generic-paper-mark">${mark}</div><div><span class="generic-eyebrow">${label}</span><h3>${escapeHtml(data.document_title || label)}</h3><small>${escapeHtml(data.number || document.number)}</small></div><div class="generic-paper-business"><strong>${escapeHtml(data.supplier?.name || state.profile.name || "Business name")}</strong><span>${escapeHtml(data.supplier?.address || state.profile.address || "")}</span></div></div>
@@ -363,7 +373,7 @@ function renderDocumentEditor() {
   const data = document.data || {};
   const items = data.items || [];
   const templateOptions = state.templates.map((template) => `<option value="${escapeHtml(template.id || template.key || template.name || "")}" ${(data.template_id === (template.id || template.key)) ? "selected" : ""}>${escapeHtml(template.name || template.title || template.id || "Template")}</option>`).join("");
-  const draft = document.status === "draft";
+  const draft = document.status === "draft" && canWriteWorkspace();
   const template = documentTemplate(document);
   const totals = genericTotals(data);
   const customerQuery = state.documentCustomerQuery.trim().toLowerCase();
@@ -399,7 +409,7 @@ function renderSettings() {
   const selectedTemplate = state.emailTemplates.find((template) => template.purpose === selectedPurpose) || {};
   const templateOptions = state.templates.map((template) => `<option value="${escapeHtml(template.id || "")}">${escapeHtml(template.name || template.id || "Template")}</option>`).join("");
   return `<div class="page settings-page">${pageHead("System", "Business settings", "Set the identity and payment details used by new documents.")}
-    <div class="settings-grid"><section class="panel settings-panel"><div class="settings-panel-head"><div><h2>Business profile</h2><p class="panel-sub">Applied to every newly created document.</p></div><span class="settings-kicker">Identity</span></div><div class="field-grid">${simpleInput("Business name", "profileName", profile.name || profile.business_name || "", "text")}${simpleInput("Email", "profileEmail", profile.email || "", "email")}${simpleInput("VAT number", "profileVat", profile.vat_number || "", "text")}${simpleInput("Default currency", "profileCurrency", profile.default_currency || "ZAR", "text")}${simpleInput("Logo URL", "profileLogoUrl", profile.logo_url || "", "url", { span: "span-2", placeholder: "https://example.com/logo.png" })}${simpleInput("Address", "profileAddress", profile.address || "", "text", { span: "span-2" })}</div><div class="logo-upload"><div><label for="profileLogoFile">Logo file</label><small>PNG, JPG, WebP, or safe SVG. Maximum 2 MB.</small><input id="profileLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"></div><button class="btn" data-upload-logo>${icon("plus")}Upload logo</button>${profile.logo_url ? `<img src="${escapeHtml(profile.logo_url)}" alt="Current business logo" class="profile-logo-preview"><button class="icon-btn" data-remove-logo aria-label="Remove business logo">${icon("trash")}</button>` : ""}</div><div class="modal-actions"><button class="btn primary" data-save-profile>${icon("check")}Save profile</button></div></section>
+    <div class="settings-grid"><section class="panel settings-panel"><div class="settings-panel-head"><div><h2>Business profile</h2><p class="panel-sub">Applied to every newly created document.</p></div><span class="settings-kicker">Identity</span></div><div class="field-grid">${simpleInput("Business name", "profileName", profile.name || profile.business_name || "", "text")}${simpleInput("Email", "profileEmail", profile.email || "", "email")}${simpleInput("VAT number", "profileVat", profile.vat_number || "", "text")}${simpleInput("Default currency", "profileCurrency", profile.default_currency || "ZAR", "text")}${simpleInput("Logo URL", "profileLogoUrl", profile.logo_url || "", "url", { span: "span-2", placeholder: "https://example.com/logo.png" })}${simpleInput("Address", "profileAddress", profile.address || "", "text", { span: "span-2" })}</div><div class="logo-upload"><div><label for="profileLogoFile">Logo file</label><small>PNG, JPG, WebP, or safe SVG. Maximum 2 MB.</small><input id="profileLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"></div><button class="btn" data-upload-logo>${icon("plus")}Upload logo</button>${profile.logo_url ? `<img src="${escapeHtml(renderAssetUrl(profile.logo_url))}" alt="Current business logo" class="profile-logo-preview"><button class="icon-btn" data-remove-logo aria-label="Remove business logo">${icon("trash")}</button>` : ""}</div><div class="modal-actions"><button class="btn primary" data-save-profile>${icon("check")}Save profile</button></div></section>
     <section class="panel"><h2>Payment methods</h2><p class="panel-sub">Visible payment instructions are attached to new documents.</p><div class="payment-method-list">${state.paymentMethods.length ? state.paymentMethods.map((method) => `<div class="payment-method"><span><strong>${escapeHtml(method.name || method.label || method.type || "Payment method")}${method.is_default ? ` <em>Default</em>` : ""}</strong><small>${escapeHtml(method.details?.instructions || method.account_name || method.masked_details || "")}</small></span>${method.is_default ? "" : `<button class="link-btn" data-set-default-payment="${escapeHtml(method.id)}">Set default</button>`}</div>`).join("") : `<p class="panel-sub">No payment methods configured.</p>`}</div><div class="field-grid payment-form">${simpleInput("Method name", "paymentMethodName", "", "text", { placeholder: "Bank transfer" })}${simpleInput("Method type", "paymentMethodType", "bank_transfer", "text")}${simpleInput("Payment details", "paymentMethodDetails", "", "text", { span: "span-2", placeholder: "Account name and reference instructions" })}<label class="checkbox-field span-2"><input id="paymentMethodDefault" type="checkbox" ${state.paymentMethods.length ? "" : "checked"}>Make this the default for new documents</label></div><div class="modal-actions"><button class="btn" data-add-payment-method>${icon("plus")}Add payment method</button></div></section>
     <section class="panel settings-panel"><div class="settings-panel-head"><div><h2>Brand presets</h2><p class="panel-sub">Save a reusable template, accent, and footer combination.</p></div><span class="settings-kicker">Presentation</span></div><div class="preset-list">${state.brandingPresets.map((preset) => `<div><strong>${escapeHtml(preset.name)}</strong><small><i style="background:${escapeHtml(preset.accent || "#7f56d9")}"></i>${escapeHtml(preset.template_id || "classic")}</small></div>`).join("") || `<p class="panel-sub">No saved presets yet.</p>`}</div><div class="field-grid">${simpleInput("Preset name", "brandingPresetName", "", "text", { placeholder: "Client-facing" })}<div class="field"><label for="brandingPresetTemplate">Paper template</label><div class="input-wrap"><select id="brandingPresetTemplate">${templateOptions}</select></div></div>${simpleInput("Accent HEX", "brandingPresetAccent", "#7f56d9", "text")}${simpleInput("Footer", "brandingPresetFooter", "", "text", { placeholder: "Thank you for your business." })}</div><div class="modal-actions"><button class="btn" data-save-branding>${icon("plus")}Save brand preset</button></div></section>
     <section class="panel settings-panel"><div class="settings-panel-head"><div><h2>Document numbering</h2><p class="panel-sub">Prefixes are independent for invoices, quotes, and receipts.</p></div><span class="settings-kicker">Controls</span></div><div class="field-grid prefix-grid">${simpleInput("Invoice prefix", "prefixInvoice", state.numberPrefixes.invoice || "INV", "text")}${simpleInput("Quote prefix", "prefixQuote", state.numberPrefixes.quote || "QUO", "text")}${simpleInput("Receipt prefix", "prefixReceipt", state.numberPrefixes.receipt || "REC", "text")}</div><div class="modal-actions"><button class="btn" data-save-prefixes>${icon("check")}Save numbering</button></div></section>
@@ -468,6 +478,7 @@ async function loadDocumentEmailHistory(id = state.document?.id) { state.documen
 async function loadDocumentSupport() {
   const [templates, profile, paymentMethods, emailTemplates, brandingPresets, numberPrefixes] = await Promise.all([api("/api/templates"), api("/api/business-profile"), api("/api/payment-methods"), api("/api/email-templates"), api("/api/branding-presets"), api("/api/number-prefixes")]);
   state.templates = templates || []; state.profile = profile || {}; state.paymentMethods = paymentMethods || []; state.emailTemplates = emailTemplates || []; state.brandingPresets = brandingPresets || []; state.numberPrefixes = numberPrefixes || {};
+  await hydrateAuthorizedAsset(state.profile.logo_url);
 }
 async function openDocument(id) {
   try { if (state.document?.status === "draft") await saveDocument({ quiet: true }); state.document = await api(`/api/documents/${id}`); state.documentEditRevision = 0; state.documentSavedRevision = 0; state.documentSaveError = false; await Promise.all([loadDocumentSupport(), loadDocumentEmailHistory(id)]); setRoute("document-editor"); }
@@ -727,7 +738,7 @@ async function uploadProfileLogo() {
     const response = await authorizedFetch("/api/business-logo", { method: "POST", headers: { "Content-Type": file.type, "X-File-Name": file.name }, body: file });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || `Logo upload failed (${response.status})`);
-    state.profile = payload.data.profile; render(); toast("Business logo uploaded");
+    state.profile = payload.data.profile; await hydrateAuthorizedAsset(state.profile.logo_url); render(); toast("Business logo uploaded");
   } catch (error) { toast(error.message, "error"); }
 }
 async function removeProfileLogo() {
@@ -790,6 +801,8 @@ async function toggleReminderRule(id) {
 function bindPage() {
   $$('[data-sign-out]').forEach((el) => el.onclick = signOut);
   $$('[data-switch-workspace]').forEach((el) => el.onclick = () => renderWorkspaceChooser(hostedSession));
+  $$('a[href^="/api/assets/"]').forEach((el) => el.onclick = (event) => { if (!browserAuth) return; event.preventDefault(); openAuthorizedResource(el.getAttribute("href")); });
+  if (!canWriteWorkspace()) $$('.settings-page input,.settings-page select,.settings-page textarea,.settings-page button:not([data-route])').forEach((element) => { element.disabled = true; });
   $$('[data-route]').forEach((el) => el.onclick = async () => { if (state.document?.status === "draft") await saveDocument({ quiet: true }); setRoute(el.dataset.route); });
   $$('[data-new-invoice]').forEach((el) => el.onclick = () => createDocument("invoice"));
   $$('[data-quick-route]').forEach((el) => el.onclick = () => setRoute("quick-create"));
@@ -1011,7 +1024,7 @@ function workspaceFromMembership(membership) { return membership?.workspaces || 
 function renderWorkspaceChooser(session, message = "") {
   const memberships = session?.memberships || [];
   showAuthGate(authCard(`<div class="auth-copy"><span class="eyebrow">Choose workspace</span><h1>Where are you working?</h1><p>Your documents and settings remain isolated within the selected workspace.</p></div>${message ? `<div class="auth-message">${escapeHtml(message)}</div>` : ""}<div class="workspace-choices">${memberships.map((membership) => { const workspace = workspaceFromMembership(membership); return `<button type="button" class="workspace-choice" data-choose-workspace="${escapeHtml(membership.workspace_id)}"><span class="company-avatar">${escapeHtml(initials(workspace.name))}</span><span><strong>${escapeHtml(workspace.name)}</strong><small>${escapeHtml(membership.role)}${workspace.slug ? ` · ${escapeHtml(workspace.slug)}` : ""}</small></span>${icon("chevron")}</button>`; }).join("")}</div><div class="auth-actions"><button class="btn" type="button" data-new-workspace>Create another workspace</button><button class="link-btn" type="button" data-auth-logout>Sign out</button></div>`));
-  $$('[data-choose-workspace]').forEach((button) => button.onclick = async () => { localStorage.setItem(WORKSPACE_KEY, button.dataset.chooseWorkspace); await loadHostedSession(); });
+  $$('[data-choose-workspace]').forEach((button) => button.onclick = async () => { clearAuthorizedAssets(); localStorage.setItem(WORKSPACE_KEY, button.dataset.chooseWorkspace); await loadHostedSession(); });
   $("[data-new-workspace]").onclick = () => renderWorkspaceOnboarding(session);
   $("[data-auth-logout]").onclick = signOut;
 }
@@ -1033,11 +1046,12 @@ function decorateHostedShell(session) {
   const workspace = workspaceFromMembership(selected); const user = session.user || {};
   $(".sidebar-foot").innerHTML = `<div class="company-avatar">${escapeHtml(initials(workspace.name))}</div><div><strong>${escapeHtml(workspace.name)}</strong><span>${escapeHtml(user.email || selected?.role || "Member")}</span></div><button class="icon-btn" data-sign-out aria-label="Sign out">${icon("x")}</button>`;
   $(".api-status").innerHTML = `<i></i>${escapeHtml(workspace.name)}`;
+  document.body.classList.toggle("workspace-readonly", session.role === "viewer");
   if (session.memberships.length > 1) $(".sidebar-foot > div:nth-child(2)").setAttribute("data-switch-workspace", "");
 }
 
 async function signOut() {
-  await browserAuth?.signOut(); localStorage.removeItem(WORKSPACE_KEY); hostedSession = null; authScreenMode = "signin"; renderAuthScreen();
+  await browserAuth?.signOut(); clearAuthorizedAssets(); document.body.classList.remove("workspace-readonly"); localStorage.removeItem(WORKSPACE_KEY); hostedSession = null; authScreenMode = "signin"; renderAuthScreen();
 }
 
 async function loadHostedSession() {

@@ -28,10 +28,10 @@ SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_DB_URL=...
 FORMA_AUTH_MODE=required
 FORMA_AUTH_PROVIDERS=email,google,azure
-FORMA_DATA_BACKEND=sqlite
+FORMA_DATA_BACKEND=supabase
 ```
 
-Important: Vercel function storage is ephemeral. Use this Vercel target for preview/demo deployments until the SQLite store is replaced by the Supabase/Postgres adapter, or deploy production on Railway with a persistent volume/database.
+Important: Vercel function storage is ephemeral. Hosted mode does not depend on it: business records use Supabase Postgres and uploads use the private `forma-private` bucket. SQLite mode still requires a persistent volume and must not be used as a production database on Vercel.
 
 ## Supabase
 
@@ -52,7 +52,9 @@ The schema mirrors the current document ledger: customers, products, documents, 
 
 The `20260719000000_auth_workspaces_rls.sql` migration enables Supabase Auth-backed workspaces, owner/admin/member/viewer roles, tenant columns, composite tenant foreign keys, RLS, workspace RPCs, and private Storage policies. It fails closed if existing hosted rows have no assigned workspace.
 
-Server authentication is also fail-closed: required mode verifies access tokens against Supabase Auth, loads active memberships through RLS, and rejects spoofed workspace headers. Business-data routes remain unavailable until the Supabase Postgres store adapter replaces SQLite and `FORMA_DATA_BACKEND=supabase` is deliberately enabled.
+Server authentication is also fail-closed: required mode verifies access tokens against Supabase Auth, loads active memberships through RLS, and rejects spoofed workspace headers. The Supabase store adapter scopes every read and mutation to the resolved workspace, uses private Storage paths prefixed by workspace UUID, and moves financial multi-record workflows into atomic Postgres functions. Business-data routes remain unavailable unless `FORMA_DATA_BACKEND=supabase` and the server-only service-role key are both configured.
+
+Authenticated browser users receive read-only table grants, so the public project key cannot bypass Express validation with direct writes. Mutations are sent by the server through narrowly scoped, transactional functions. The service-role key is never included in `/api/auth/config`; rotate it immediately if it is ever exposed outside the server environment.
 
 ### Auth dashboard setup
 
@@ -90,4 +92,4 @@ Railway config is provided in `railway.json`. When moving from Vercel preview to
 2. Set `DATABASE_URL` and the same Resend variables.
 3. Keep `npm start` as the start command.
 4. Point health checks at `/api/health`.
-5. Replace the SQLite store with the Postgres adapter before relying on production data durability.
+5. Apply all Supabase migrations and run the hosted Auth/RLS/Storage integration checklist before importing production data.

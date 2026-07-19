@@ -8,11 +8,12 @@ const bearerToken = (request) => {
 export function resolveAuthConfig(environment = process.env) {
   const url = normalizeUrl(environment.SUPABASE_URL);
   const publishableKey = String(environment.SUPABASE_PUBLISHABLE_KEY || environment.SUPABASE_ANON_KEY || "").trim();
+  const serviceRoleKey = String(environment.SUPABASE_SERVICE_ROLE_KEY || "").trim();
   const configured = Boolean(url && publishableKey);
   const requestedMode = String(environment.FORMA_AUTH_MODE || (configured ? "required" : "disabled")).trim().toLowerCase();
   const mode = ["disabled", "optional", "required"].includes(requestedMode) ? requestedMode : "required";
   const providers = String(environment.FORMA_AUTH_PROVIDERS || "email,google,azure").split(",").map((provider) => provider.trim()).filter(Boolean);
-  return { url, publishableKey, configured, mode, providers };
+  return { url, publishableKey, serviceRoleKey, configured, mutationConfigured: Boolean(url && serviceRoleKey), mode, providers };
 }
 
 export function publicAuthConfig(config = resolveAuthConfig()) {
@@ -54,6 +55,15 @@ export function createAuthMiddleware({ config = resolveAuthConfig(), fetchImpl =
         ...(options.headers || {})
       }
     });
+    const serviceFetch = config.serviceRoleKey ? (path, options = {}) => fetchImpl(`${config.url}${path}`, {
+      ...options,
+      headers: {
+        apikey: config.serviceRoleKey,
+        Authorization: `Bearer ${config.serviceRoleKey}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    }) : null;
     try {
       const userResponse = await supabaseFetch("/auth/v1/user");
       if (!userResponse.ok) return next(authError(userResponse, "The Supabase session is invalid or expired"));
@@ -64,7 +74,7 @@ export function createAuthMiddleware({ config = resolveAuthConfig(), fetchImpl =
       const requestedWorkspace = String(request.get("x-workspace-id") || "").trim();
       const selected = requestedWorkspace ? memberships.find((membership) => membership.workspace_id === requestedWorkspace) : memberships.length === 1 ? memberships[0] : null;
       if (requestedWorkspace && !selected) return response.status(403).json({ error: { code: "WORKSPACE_ACCESS_DENIED", message: "You do not have access to that workspace" } });
-      request.auth = { user, token, memberships, workspaceId: selected?.workspace_id || null, role: selected?.role || null, supabaseFetch };
+      request.auth = { user, token, memberships, workspaceId: selected?.workspace_id || null, role: selected?.role || null, supabaseFetch, serviceFetch };
       return next();
     } catch (cause) {
       cause.status ||= 503; cause.code ||= "AUTH_SERVICE_UNAVAILABLE"; return next(cause);
@@ -74,4 +84,3 @@ export function createAuthMiddleware({ config = resolveAuthConfig(), fetchImpl =
   middleware.publicConfig = publicConfig;
   return middleware;
 }
-

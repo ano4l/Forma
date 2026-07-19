@@ -9,6 +9,7 @@ import { publicAuthConfig, resolveAuthConfig } from "../auth.js";
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const user = { id: "22222222-2222-4222-8222-222222222222", email: "owner@forma.test" };
 const membership = { workspace_id: workspaceId, role: "owner", status: "active", workspaces: { id: workspaceId, name: "Forma Test", slug: "forma-test" } };
+const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 function authFetch(url, options = {}) {
   if (url.endsWith("/auth/v1/user")) return Promise.resolve(new Response(JSON.stringify(user), { status: options.headers.Authorization === "Bearer valid-token" ? 200 : 401, headers: { "Content-Type": "application/json" } }));
@@ -17,10 +18,10 @@ function authFetch(url, options = {}) {
   return Promise.resolve(new Response("{}", { status: 404, headers: { "Content-Type": "application/json" } }));
 }
 
-async function withServer(run) {
+async function withServer(run, { dataBackend = "sqlite" } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "forma-auth-"));
-  const config = { url: "https://project.supabase.co", publishableKey: "publishable-test", configured: true, mode: "required", providers: ["email", "google", "azure"] };
-  const app = createApp({ database: path.join(dir, "test.sqlite"), uploadDir: path.join(dir, "uploads"), authOptions: { config, fetchImpl: authFetch } });
+  const config = { url: "https://project.supabase.co", publishableKey: "publishable-test", serviceRoleKey: "service-test", configured: true, mutationConfigured: true, mode: "required", providers: ["email", "google", "azure"] };
+  const app = createApp({ database: path.join(dir, "test.sqlite"), uploadDir: path.join(dir, "uploads"), dataBackend, authOptions: { config, fetchImpl: authFetch } });
   const server = app.listen(0, "127.0.0.1"); await new Promise((resolve) => server.once("listening", resolve));
   try { await run(`http://127.0.0.1:${server.address().port}`); }
   finally { await new Promise((resolve) => server.close(resolve)); app.locals.store.close(); rmSync(dir, { recursive: true, force: true }); }
@@ -29,9 +30,11 @@ async function withServer(run) {
 test("auth configuration is fail-closed and never exposes service credentials", () => {
   const disabled = resolveAuthConfig({});
   assert.equal(disabled.mode, "disabled");
+  assert.equal(disabled.mutationConfigured, false);
   const required = resolveAuthConfig({ SUPABASE_URL: "https://project.supabase.co/", SUPABASE_PUBLISHABLE_KEY: "publishable", SUPABASE_SERVICE_ROLE_KEY: "secret" });
   assert.equal(required.mode, "required");
   assert.equal(required.url, "https://project.supabase.co");
+  assert.equal(required.mutationConfigured, true);
   assert.doesNotMatch(JSON.stringify(publicAuthConfig(required)), /secret|service_role/i);
 });
 
@@ -72,5 +75,34 @@ test("hosted migration scopes every business table and private object path by wo
   assert.match(sql, /forma-private/);
   assert.match(sql, /storage\.foldername\(name\)/);
   assert.match(sql, /run an explicit tenant data migration first/);
+  assert.match(sql, /allocate_document_number/);
+  assert.match(sql, /revoke insert, update, delete on all tables in schema public from authenticated/);
+  assert.match(sql, /revoke select on public\.payment_methods from authenticated/);
+  const workflows = readFileSync(new URL("../supabase/migrations/20260719010000_hosted_document_workflows.sql", import.meta.url), "utf8");
+  for (const name of ["create_document_record", "finalize_document_record", "transition_document_record", "convert_quote_record", "record_invoice_payment", "begin_email_delivery_record", "claim_reminder_delivery_record", "create_recurring_run_record"]) assert.match(workflows, new RegExp(name));
+  assert.match(workflows, /for update/gi);
+  assert.match(workflows, /security definer/gi);
+  assert.doesNotMatch(workflows, /grant execute[^;]+to authenticated/i);
 });
 
+test("required auth enables the Supabase store only after workspace membership is resolved", async () => {
+  const hostedFetch = async (url, options = {}) => {
+    if (url.endsWith("/auth/v1/user")) return jsonResponse(user, 200);
+    if (url.includes("/rest/v1/workspace_memberships")) return jsonResponse([membership], 200);
+    if (url.includes("/rest/v1/documents?")) {
+      assert.match(url, new RegExp(`workspace_id=eq\\.${workspaceId}`));
+      assert.equal(options.headers.Authorization, "Bearer valid-token");
+      return jsonResponse([], 200);
+    }
+    return jsonResponse({}, 404);
+  };
+  const dir = mkdtempSync(path.join(tmpdir(), "forma-hosted-auth-"));
+  const config = { url: "https://project.supabase.co", publishableKey: "publishable-test", serviceRoleKey: "service-test", configured: true, mutationConfigured: true, mode: "required", providers: ["email"] };
+  const app = createApp({ database: path.join(dir, "unused.sqlite"), uploadDir: path.join(dir, "uploads"), dataBackend: "supabase", authOptions: { config, fetchImpl: hostedFetch } });
+  const server = app.listen(0, "127.0.0.1"); await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/documents`, { headers: { Authorization: "Bearer valid-token", "X-Workspace-Id": workspaceId } });
+    assert.equal(response.status, 200); assert.deepEqual((await response.json()).data, []);
+    assert.equal(app.locals.tenantStoreReady, true);
+  } finally { await new Promise((resolve) => server.close(resolve)); app.locals.store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

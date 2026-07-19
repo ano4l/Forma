@@ -131,6 +131,45 @@ $$;
 revoke all on function public.create_workspace(text, text) from public;
 grant execute on function public.create_workspace(text, text) to authenticated;
 
+create or replace function public.allocate_document_number(target_workspace uuid, target_type text, target_year integer)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  next_value integer;
+  number_prefix text;
+begin
+  if target_type not in ('invoice', 'quote', 'receipt') then
+    raise exception 'Invalid document type' using errcode = '22023';
+  end if;
+  if target_year < 2000 or target_year > 9999 then
+    raise exception 'Invalid document year' using errcode = '22023';
+  end if;
+  if (select auth.role()) <> 'service_role' and not public.has_workspace_role(target_workspace, 'member') then
+    raise exception 'Workspace write access required' using errcode = '42501';
+  end if;
+
+  insert into public.document_sequences (workspace_id, document_type, year, value)
+  values (target_workspace, target_type, target_year, 1)
+  on conflict (workspace_id, document_type, year)
+  do update set value = public.document_sequences.value + 1
+  returning value into next_value;
+
+  select coalesce(value ->> target_type, upper(left(target_type, 3)))
+  into number_prefix
+  from public.settings
+  where workspace_id = target_workspace and key = 'number_prefixes';
+
+  number_prefix := coalesce(number_prefix, case target_type when 'invoice' then 'INV' when 'quote' then 'QUO' else 'REC' end);
+  return number_prefix || '-' || target_year::text || '-' || lpad(next_value::text, 5, '0');
+end;
+$$;
+
+revoke all on function public.allocate_document_number(uuid, text, integer) from public;
+grant execute on function public.allocate_document_number(uuid, text, integer) to service_role;
+
 create or replace function public.accept_workspace_invitation(invitation_token text)
 returns uuid
 language plpgsql
@@ -337,12 +376,10 @@ end $$;
 
 revoke all on all tables in schema public from anon;
 grant usage on schema public to authenticated;
-grant select, insert, update, delete on all tables in schema public to authenticated;
-grant usage, select on all sequences in schema public to authenticated;
-revoke update on public.workspaces from authenticated;
-grant update (name, slug, updated_at) on public.workspaces to authenticated;
-revoke update on public.workspace_memberships from authenticated;
-grant update (role, status, updated_at) on public.workspace_memberships to authenticated;
+grant select on all tables in schema public to authenticated;
+revoke select on public.payment_methods from authenticated;
+revoke insert, update, delete on all tables in schema public from authenticated;
+revoke usage, update on all sequences in schema public from authenticated;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
