@@ -83,6 +83,8 @@ test("hosted migration scopes every business table and private object path by wo
   assert.match(workflows, /for update/gi);
   assert.match(workflows, /security definer/gi);
   assert.doesNotMatch(workflows, /grant execute[^;]+to authenticated/i);
+  const retention = readFileSync(new URL("../supabase/migrations/20260719050000_observability_retention.sql", import.meta.url), "utf8");
+  assert.match(retention, /security definer/); assert.match(retention, /auth\.role\(\).*service_role/); assert.match(retention, /workspace_id is not distinct from target_workspace/); assert.doesNotMatch(retention, /grant execute[^;]+to authenticated/i);
 });
 
 test("required auth enables the Supabase store only after workspace membership is resolved", async () => {

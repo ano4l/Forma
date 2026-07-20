@@ -11,13 +11,15 @@ Deploy migrations before application code that depends on them. Take a database 
 - `/api/health` is a process liveness check and reports only configuration state.
 - `/api/ready` checks the active data backend and should be the deployment readiness/health-check target.
 - Every response includes `X-Request-Id`. Production request and server-error logs are newline-delimited JSON, so an incident can be traced without logging request bodies, authorization values, provider payloads, or financial details.
+- Set `FORMA_METRICS_SECRET` and scrape `GET /api/internal/metrics` with a Bearer token. The Prometheus text export contains status-family counts, aggregate/average latency, error-code counts, uptime, and heap use; it deliberately omits routes, workspace IDs, document IDs, and customer labels.
+- Optionally set `FORMA_ERROR_WEBHOOK_URL` and `FORMA_ERROR_WEBHOOK_SECRET` to send a signed, sanitized envelope for server errors. The envelope includes only service/environment, request ID, method, route template, status, code, and timestamp. Production accepts only HTTPS sinks.
 - Alert on readiness failures, HTTP 5xx rate, webhook 4xx/5xx responses, scheduled-operation failures, email bounce/complaint growth, unmatched provider events, and payment reconciliation mismatches.
 
 The built-in limiter protects a single Node process. Production should also enforce per-IP and per-route limits at the CDN/WAF because in-memory counters are not shared between serverless instances.
 
 ## Scheduled work
 
-Invoke `POST /api/internal/run-operations` with `X-Forma-Cron-Secret` at least every 15 minutes. Use a dedicated random secret and rotate it after any exposure. The endpoint claims retries and reminder/run records before work, making overlapping scheduler calls duplicate-safe.
+Invoke `POST /api/internal/run-operations` with `X-Forma-Cron-Secret` at least every 15 minutes. Use a dedicated random secret and rotate it after any exposure. The endpoint claims retries and reminder/run records before work, making overlapping scheduler calls duplicate-safe. It also applies each workspace's provider-payload retention policy: raw callback JSON is replaced with a redaction marker after the configured window, while provider/event IDs and processed timestamps remain available for idempotency and incident correlation. A legal hold pauses redaction.
 
 ## Backup and recovery
 

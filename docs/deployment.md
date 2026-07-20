@@ -40,6 +40,9 @@ FORMA_AUTH_PROVIDERS=email,google,azure
 FORMA_DATA_BACKEND=supabase
 FORMA_RATE_LIMIT_PER_MINUTE=300
 FORMA_REQUEST_LOGS=true
+FORMA_METRICS_SECRET=...
+FORMA_ERROR_WEBHOOK_URL=https://monitoring.example.com/forma-errors
+FORMA_ERROR_WEBHOOK_SECRET=...
 ```
 
 Important: Vercel function storage is ephemeral. Hosted mode does not depend on it: business records use Supabase Postgres and uploads use the private `forma-private` bucket. SQLite mode still requires a persistent volume and must not be used as a production database on Vercel.

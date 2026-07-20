@@ -9,6 +9,7 @@ const TYPES = ["invoice", "quote", "receipt"];
 const STATUS = { quote: ["draft", "sent", "accepted", "declined", "expired", "converted"], invoice: ["draft", "finalized", "sent", "partially_paid", "paid", "overdue", "void", "refunded"], receipt: ["draft", "issued", "void"] };
 const DEFAULT_PROFILE = { name: "Forma Studio", email: "billing@forma.co.za", address: "", vat_registered: false, vat_number: "", default_currency: "ZAR", default_terms_days: 30 };
 const DEFAULT_PREFIXES = { invoice: "INV", quote: "QUO", receipt: "REC" };
+const DEFAULT_PROVIDER_RETENTION = { payload_days: 90, legal_hold: false };
 const DEFAULT_REMINDER_RULES = [
   { id: "before_due_7", label: "7 days before due", offset_days: -7, purpose: "invoice_reminder", active: true },
   { id: "due_today", label: "On due date", offset_days: 0, purpose: "invoice_reminder", active: true },
@@ -86,6 +87,9 @@ export class SupabaseStore {
   async saveBusinessProfile(input = {}) { const current = await this.getBusinessProfile(); const profile = { ...DEFAULT_PROFILE, ...current, ...input, default_currency: String(input.default_currency || current.default_currency || "ZAR").toUpperCase() }; await this.setting("business_profile", profile); await this.setting("supplier", profile); return profile; }
   async prefixes() { await this.ensureSeeded(); return { ...DEFAULT_PREFIXES, ...await this.getSetting("number_prefixes", {}) }; }
   async savePrefixes(value = {}) { for (const type of TYPES) if (value[type] !== undefined && !/^[A-Z0-9]{2,10}$/i.test(value[type])) throw domainError(`Prefix for ${type} must be 2-10 letters or digits`); const merged = { ...await this.prefixes(), ...value }; await this.setting("number_prefixes", merged); return merged; }
+  async getProviderPayloadRetentionPolicy() { return { ...DEFAULT_PROVIDER_RETENTION, ...await this.getSetting("provider_payload_retention", DEFAULT_PROVIDER_RETENTION) }; }
+  async saveProviderPayloadRetentionPolicy(input = {}) { this.requireRole("admin"); const payloadDays = Math.round(Number(input.payload_days)); if (!Number.isInteger(payloadDays) || payloadDays < 7 || payloadDays > 3650) throw domainError("payload_days must be between 7 and 3650"); const policy = { payload_days: payloadDays, legal_hold: Boolean(input.legal_hold) }; await this.setting("provider_payload_retention", policy); return policy; }
+  async redactProviderPayloads({ as_of } = {}) { this.requireRole("admin"); const policy = await this.getProviderPayloadRetentionPolicy(); if (policy.legal_hold) return { redacted: 0, legal_hold: true, policy }; const reference = /^\d{4}-\d{2}-\d{2}$/.test(String(as_of || "")) ? `${as_of}T00:00:00.000Z` : now(); const cutoff = new Date(new Date(reference).getTime() - policy.payload_days * 86400000).toISOString(); const result = await this.rpc("redact_provider_payloads", { target_workspace: this.context().workspaceId, target_before: cutoff }); return { redacted: Number(result) || 0, legal_hold: false, cutoff, policy }; }
   async defaultPaymentMethod() { const rows = await this.select("payment_methods", "active=eq.true&is_default=eq.true&limit=1", { useService: true }); return mapPaymentMethod(rows[0], true); }
   async normalizeData(input = {}, type = "invoice", number = input.number || "") {
     assertType(type); const profile = await this.getBusinessProfile(); const template = templateFor(input.template_id || "classic");

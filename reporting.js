@@ -29,8 +29,20 @@ export function taxReport(documents, { from, to } = {}) {
   return { from: fromDate, to: toDate, rows, totals: Object.values(totals).sort((a, b) => a.currency.localeCompare(b.currency) || Number(a.tax_bps) - Number(b.tax_bps)) };
 }
 
+export function collectionForecast(documents, { asOf = new Date().toISOString().slice(0, 10) } = {}) {
+  const reportDate = dateOnly(asOf, new Date().toISOString().slice(0, 10));
+  const rows = documents.filter((document) => document.document_type === "invoice" && !["draft", "void", "paid", "refunded"].includes(document.status) && Number(document.balance_due_minor) > 0).map((document) => {
+    const data = dataFor(document); const dueDate = dateOnly(data.due_date, reportDate); const daysUntilDue = dayDifference(dueDate, reportDate);
+    const bucket = daysUntilDue < 0 ? "Overdue" : daysUntilDue <= 7 ? "Next 7 days" : daysUntilDue <= 30 ? "8-30 days" : daysUntilDue <= 60 ? "31-60 days" : daysUntilDue <= 90 ? "61-90 days" : "90+ days";
+    return { document_id: document.id, number: document.number, customer: data.customer?.name || "No customer", currency: data.currency || "ZAR", due_date: dueDate, days_until_due: daysUntilDue, bucket, balance_minor: Number(document.balance_due_minor) || 0, status: document.status };
+  }).sort((a, b) => a.due_date.localeCompare(b.due_date) || a.number.localeCompare(b.number));
+  const totals = rows.reduce((groups, row) => { const group = groups[row.currency] ||= { currency: row.currency, total_minor: 0, buckets: { Overdue: 0, "Next 7 days": 0, "8-30 days": 0, "31-60 days": 0, "61-90 days": 0, "90+ days": 0 } }; group.total_minor += row.balance_minor; group.buckets[row.bucket] += row.balance_minor; return groups; }, {});
+  return { as_of: reportDate, rows, totals: Object.values(totals) };
+}
+
 export function agingCsv(report) { return csv([["As of", "Invoice", "Customer", "Email", "Due date", "Days overdue", "Aging bucket", "Currency", "Balance", "Status"], ...report.rows.map((row) => [report.as_of, row.number, row.customer, row.email, row.due_date, row.days_overdue, row.bucket, row.currency, minor(row.balance_minor), row.status])]); }
 export function taxCsv(report) { return csv([["Invoice", "Issue date", "Customer", "Currency", "Tax rate %", "Taxable amount", "Tax amount", "Invoice total", "Status"], ...report.rows.map((row) => [row.number, row.issue_date, row.customer, row.currency, row.tax_bps === null ? "Mixed" : (row.tax_bps / 100).toFixed(2), minor(row.taxable_minor), minor(row.tax_minor), minor(row.total_minor), row.status])]); }
+export function collectionForecastCsv(report) { return csv([["As of", "Invoice", "Customer", "Due date", "Days until due", "Forecast bucket", "Currency", "Expected collection", "Status"], ...report.rows.map((row) => [report.as_of, row.number, row.customer, row.due_date, row.days_until_due, row.bucket, row.currency, minor(row.balance_minor), row.status])]); }
 
 export function renderReceivablesReportPdf(report, profile, response) {
   const pdf = new PDFDocument({ size: "A4", margin: 46, info: { Title: `Receivables aging as of ${report.as_of}`, Author: profile.name || "Forma" } });
