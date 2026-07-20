@@ -23,7 +23,7 @@ Invoke `POST /api/internal/run-operations` with `X-Forma-Cron-Secret` at least e
 
 1. Enable managed Supabase backups and point-in-time recovery appropriate to the production recovery objectives.
 2. Take an encrypted logical database export before migrations and at a regular off-platform cadence. Restrict and audit access to exports because they contain customer and financial data.
-3. Keep private Storage objects under the workspace UUID prefix and include the `forma-private` bucket in the backup inventory.
+3. Keep private Storage objects under the workspace UUID prefix and include the `forma-private` bucket in the backup inventory. Include `document_portal_links` and `workspace_invitations`; their stored values are hashes and cannot reconstruct a lost share secret.
 4. Quarterly, restore the latest database and object backup into an isolated project, rotate restored secrets, and verify sign-in, tenant isolation, document/PDF retrieval, outstanding balances, and provider-event idempotency.
 5. Record recovery time, recovery point, row counts, object counts, and any manual remediation. A backup is not considered valid until a restore drill succeeds.
 

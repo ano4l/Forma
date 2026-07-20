@@ -105,6 +105,12 @@ Stripe Checkout and PayPal Orders are available from an issued invoice's **Creat
 
 Provider event IDs and payment references are unique. Duplicate callbacks return success without recording a second payment. Hosted Postgres performs event claim, invoice balance change, payment insert, and audit insert in one service-only transaction.
 
+## Customer portal and team access
+
+Issued documents can create an expiring customer-portal URL. Only a SHA-256 digest is stored; the fragment secret is shown once, removed from the browser address immediately, and sent to public APIs in a dedicated header so request logs do not contain it. The portal exposes a sanitized immutable document, PDF download, current balance, an existing provider-hosted payment link, and sent-quote accept/decline actions. Revoke links from the document action menu when access should end.
+
+Workspace owners/admins manage members and invitations in Settings. Invitation tokens are likewise stored only as hashes, expire after seven days, and are bound to the invited user's verified Supabase Auth email. Configure `FORMA_PUBLIC_URL` to the exact HTTPS origin before enabling invitation or portal delivery; production fails closed if it is missing or not HTTPS.
+
 ## Scheduled operations
 
 Call `POST /api/internal/run-operations` with `X-Forma-Cron-Secret: <FORMA_CRON_SECRET>` from the platform scheduler. One invocation runs due recurring invoices, reminder delivery, and claimed transient email retries for every workspace. An optional JSON body can supply `{"as_of":"YYYY-MM-DD"}` for controlled testing. The route is unavailable until a secret is configured.

@@ -7,7 +7,7 @@ Last updated: 2026-07-19
 Forma is now a working local-first receivables workspace, not a static invoice mockup. It supports invoices, quotes, and receipts through one durable SQLite document ledger with PDF output, lifecycle controls, configurable identity, reusable templates, and a responsive application shell.
 
 - Shared-document workflow milestone: approximately 95% complete.
-- Full hosted production SaaS brief: approximately 88% complete.
+- Full hosted production SaaS brief: approximately 93% complete.
 
 The second figure is deliberately lower: authentication, tenant isolation, real email and payment providers, secure object storage, scheduled work, and production operations require external infrastructure and credentials that are not present in this local environment.
 
@@ -70,6 +70,8 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Release and dependency automation: GitHub Actions runs clean install, syntax build, all tests, high-severity production dependency audit, and PostgreSQL migration parsing. Dependabot monitors npm and workflow dependencies.
 - Formal finance outputs: Reports now downloads spreadsheet-safe receivables, aging, and tax-by-rate CSVs plus a branded accounts-receivable aging PDF. Aging uses due-date buckets and preserves currency groups; tax exports preserve per-rate taxable bases and tax amounts.
 - Operations runbook: release sequencing, readiness/alerts, scheduler behavior, backup/PITR and off-platform export policy, restore drills, rollback, secret rotation, and payment/tenant incident priorities are documented.
+- Secure customer portal: issued documents create revocable 1-90 day opaque links whose SHA-256 digest is the only stored secret. The dedicated responsive portal removes the fragment secret from the address bar, sends it only in a header, exposes sanitized immutable document data and PDF download, shows existing provider-hosted payment options, and lets a customer accept or decline a sent quote exactly once.
+- Hosted team administration: owners/admins can list members and pending invitations, invite admin/member/viewer roles, revoke invitations, and update member role/status with last-owner and ownership boundaries. Seven-day invitation secrets are stored only as hashes, bound to the invited Supabase Auth email, delivered through the configured provider, and accepted before a workspace is selected.
 
 ## Partially complete
 
@@ -78,15 +80,14 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Browser preview is a faithful local paper view; PDF is generated server-side from the same document/template selection but is not pixel-identical by design.
 - The legacy invoice API compatibility routes remain for existing integrations, but the SPA no longer exposes or initializes a separate invoice composer. They can be deprecated after external clients migrate to `/api/documents`.
 - Email templates, delivery history, Resend webhooks, suppression handling, and retries are implemented, but the active local provider defaults to `mock`; live domain verification and callback testing await provider credentials.
-- Dashboard/reporting includes formal receivables aging and tax exports; forecasting, customer portals, and late-fee policy are not implemented. Hosted schedule execution is implemented behind a cron-secret endpoint but still needs a platform scheduler configured.
+- Dashboard/reporting includes formal receivables aging and tax exports; forecasting and late-fee policy are not implemented. Hosted schedule execution is implemented behind a cron-secret endpoint but still needs a platform scheduler configured.
 - Supabase Auth, tenancy enforcement, the Postgres store, atomic workflow functions, and private Storage adapter are implemented across the schema, server, and browser boundaries. Live migration application, cross-user RLS testing, provider OAuth, confirmation email, and full hosted lifecycle verification await the supplied project/provider credentials.
 - All Supabase migrations parse successfully with a PostgreSQL 17-compatible parser. They have not yet been applied to a real Supabase project because project credentials/linkage have not been supplied.
 
 ## Not started
 
-- Workspace invitation management UI and transactional invitation email delivery.
 - Hosted backup/PITR policy and production data migration from the local ledger.
-- Provider-initiated refunds, dispute handling, partial refunds, and a branded customer document/payment portal. Stripe Checkout and PayPal payment links plus payment webhooks/reconciliation are implemented.
+- Provider-initiated refunds, dispute handling, and partial refunds. The branded secure customer document/payment portal is implemented.
 - Late fees and a durable general-purpose worker queue. Delivery retry claiming and cron-triggered document operations are implemented without a separate queue service.
 - Advanced tax rules: inclusive/compound taxes, exemptions, multi-rate jurisdiction engines, and filing integrations.
 - Forecast analytics, external API keys/customer webhooks, distributed rate limits, third-party error/metric ingestion, and a completed live disaster-recovery drill. CI, structured observability, single-process limits, readiness, deployment configuration, and the recovery runbook are implemented.
@@ -101,7 +102,7 @@ npm test
 $env:PORT='4175'; npm start
 ```
 
-Latest verified result (2026-07-19): `37` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module, the production dependency audit found `0` vulnerabilities, and all four hosted SQL migrations parse successfully. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, hosted-store activation only after tenant resolution, workspace creation RPC forwarding, session persistence and refresh, confirmation-required sign-up, OAuth callback capture, and logout. Adapter coverage proves explicit workspace filters and write payloads, private object-path enforcement, viewer read behavior, and server-only hosted route activation. Provider coverage proves atomic/idempotent payment reconciliation, Resend state/suppression handling, raw-body signature verification, PayPal OAuth/order amount conversion, and provider idempotency headers. Reporting/runtime coverage proves aging buckets, per-rate tax totals, CSV formula neutralization, readiness, security headers, and valid PDF output. Live hosted/provider application still awaits credentials.
+Latest verified result (2026-07-19): `38` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module, the production dependency audit found `0` vulnerabilities, and all five hosted SQL migrations parse successfully. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, hosted-store activation only after tenant resolution, workspace creation/invitation RPC forwarding, session persistence and refresh, confirmation-required sign-up, OAuth callback capture, and logout. Adapter coverage proves explicit workspace filters and write payloads, private object-path enforcement, viewer read behavior, and server-only hosted route activation. Provider coverage proves atomic/idempotent payment reconciliation, Resend state/suppression handling, raw-body signature verification, PayPal OAuth/order amount conversion, and provider idempotency headers. Portal coverage proves secret hashing, sanitized retrieval, valid PDF output, invalid-token rejection, and one-time quote response. Reporting/runtime coverage proves aging buckets, per-rate tax totals, CSV formula neutralization, readiness, and security headers. Live hosted/provider application still awaits credentials.
 
 Live local verification was completed at `http://127.0.0.1:4179`:
 
@@ -123,10 +124,11 @@ Live local verification was completed at `http://127.0.0.1:4179`:
 - Mobile `390x844` verification showed no horizontal overflow and the sticky paper preview correctly moved off the editor canvas.
 - Unified-editor browser verification (2026-07-19) confirmed that the global New invoice action opens the shared editor, a saved client populates complete billing details, a saved product replaces the pristine starter row, Net 14 recalculates the due date, debounced autosave survives a full reload, and no browser console/page errors are emitted.
 - Post-auth/hosted-adapter browser regression (2026-07-19) confirmed that disabled-auth local mode still opens the existing Documents workspace and ledger after every API route became async-capable, with no page errors. Provider-backed live sign-in remains pending until the Supabase project and OAuth credentials are supplied.
+- Customer-portal browser verification (2026-07-19) opened a newly issued quote through its one-time fragment secret, confirmed the secret was immediately removed from the address bar, rendered customer/document/totals and accept/decline/PDF actions, and emitted no browser errors.
 
 ## Next priorities
 
 1. Apply the migrations to the supplied Supabase project, configure Google/Microsoft and Auth SMTP, then run owner/member/viewer cross-workspace RLS, Storage, and complete document-lifecycle integration tests.
 2. Configure the Resend domain/webhook, Stripe and PayPal sandbox apps/webhooks, and the platform scheduler; run real provider acceptance, delayed-payment, duplicate-callback, bounce, and PayPal-return tests.
-3. Add provider refunds/disputes and a branded customer portal with secure document access and payment status.
-4. Add workspace invitation administration, external error/metrics ingestion, forecasting, audit retention controls, and run the first documented backup restore drill.
+3. Add provider refunds/disputes and partial-refund ledger handling.
+4. Add external error/metrics ingestion, forecasting, audit retention controls, and run the first documented backup restore drill.
