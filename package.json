@@ -9,8 +9,8 @@
   },
   "scripts": {
     "build": "node --check app.js && node --check portal.js && node --check auth.js && node --check supabase-browser.js && node --check supabase-store.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check payment-provider.js && node --check webhook-provider.js && node --check reporting.js && node --check parser.js && node --check pdf.js && node --check templates.js",
-    "dev": "node --watch server.js",
-    "start": "node server.js",
+    "dev": "node --env-file-if-exists=.env.local --watch server.js",
+    "start": "node --env-file-if-exists=.env.local server.js",
     "test": "node --test"
   },
   "dependencies": {

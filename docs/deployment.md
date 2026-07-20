@@ -99,11 +99,13 @@ Create a Resend webhook for `https://app.yourdomain.com/api/webhooks/resend`, su
 
 Stripe Checkout and PayPal Orders are available from an issued invoice's **Create payment link** action. Configure the providers independently; the UI returns a provider-hosted URL and Forma records money only after a verified event is reconciled against the original checkout amount.
 
-- Stripe webhook: `https://app.yourdomain.com/api/webhooks/stripe`. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, and `checkout.session.async_payment_failed`; store the endpoint secret as `FORMA_STRIPE_WEBHOOK_SECRET`.
-- PayPal webhook: `https://app.yourdomain.com/api/webhooks/paypal`. At minimum subscribe to `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, and `CHECKOUT.ORDER.VOIDED`; store the webhook ID as `FORMA_PAYPAL_WEBHOOK_ID`.
+- Stripe webhook: `https://app.yourdomain.com/api/webhooks/stripe`. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `refund.created`, `refund.updated`, `refund.failed`, and `charge.dispute.created/updated/closed`; store the endpoint secret as `FORMA_STRIPE_WEBHOOK_SECRET`.
+- PayPal webhook: `https://app.yourdomain.com/api/webhooks/paypal`. At minimum subscribe to `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, `CHECKOUT.ORDER.VOIDED`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.FAILED`, and `CUSTOMER.DISPUTE.CREATED/UPDATED/RESOLVED`; store the webhook ID as `FORMA_PAYPAL_WEBHOOK_ID`.
 - Set `FORMA_PUBLIC_URL` to the exact HTTPS application origin. PayPal returns to a one-time opaque checkout route which captures the approved order and redirects to the app.
 
 Provider event IDs and payment references are unique. Duplicate callbacks return success without recording a second payment. Hosted Postgres performs event claim, invoice balance change, payment insert, and audit insert in one service-only transaction.
+
+Workspace owners/admins can issue full or partial refunds against the original captured payment. Refund requests reserve the remaining refundable amount before contacting the provider, use provider idempotency keys, and alter the invoice ledger only after a successful provider response or verified callback. Subsequent callbacks cannot apply the same refund twice. Provider-created disputes are retained as visible invoice risk events but do not silently alter receivables; finance operators must resolve their accounting treatment from the provider outcome.
 
 ## Customer portal and team access
 

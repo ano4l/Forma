@@ -56,6 +56,32 @@ export async function capturePayPalOrder(orderId, { environment = process.env, f
   return body;
 }
 
+export async function createProviderRefund({ provider, providerPaymentId, refundId, checkoutId, amountMinor, currency, reason, requestKey }, { environment = process.env, fetchImpl = globalThis.fetch } = {}) {
+  if (provider === "stripe") {
+    const secret = env("FORMA_STRIPE_SECRET_KEY", environment); if (!secret) throw providerError("Stripe is not configured", 503);
+    const stripe = new Stripe(secret);
+    const refund = await stripe.refunds.create({
+      payment_intent: providerPaymentId,
+      amount: amountMinor,
+      ...( ["duplicate", "fraudulent", "requested_by_customer"].includes(reason) ? { reason } : {}),
+      metadata: { forma_refund_id: refundId, forma_checkout_id: checkoutId }
+    }, { idempotencyKey: requestKey });
+    return { id: refund.id, status: refund.status, amount_minor: refund.amount, currency: refund.currency?.toUpperCase(), provider_payment_id: typeof refund.payment_intent === "string" ? refund.payment_intent : refund.payment_intent?.id, raw: refund };
+  }
+  if (provider === "paypal") {
+    const token = await paypalToken(environment, fetchImpl);
+    const response = await fetchImpl(`${paypalBase(environment)}/v2/payments/captures/${encodeURIComponent(providerPaymentId)}/refund`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "PayPal-Request-Id": requestKey, Prefer: "return=representation" },
+      body: JSON.stringify({ amount: { value: (amountMinor / 100).toFixed(2), currency_code: currency }, custom_id: refundId, invoice_id: checkoutId, ...(reason ? { note_to_payer: String(reason).slice(0, 255) } : {}) })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw providerError(body.details?.[0]?.description || body.message || "PayPal could not create the refund");
+    return { id: body.id, status: String(body.status || "PENDING").toLowerCase(), amount_minor: Math.round(Number(body.amount?.value) * 100), currency: body.amount?.currency_code?.toUpperCase(), provider_payment_id: providerPaymentId, raw: body };
+  }
+  throw Object.assign(new Error("provider must be stripe or paypal"), { status: 422, code: "VALIDATION_ERROR" });
+}
+
 export function verifyStripeWebhook(rawBody, signature, environment = process.env) {
   const secret = env("FORMA_STRIPE_WEBHOOK_SECRET", environment); if (!secret) throw providerError("Stripe webhook verification is not configured", 503);
   const stripe = new Stripe(env("FORMA_STRIPE_SECRET_KEY", environment) || "sk_test_placeholder");
@@ -79,4 +105,29 @@ export function paymentEventDetails(provider, event) {
   const resource = event.resource || {}; const related = resource.supplementary_data?.related_ids || {};
   const amount = resource.amount?.value; const amountMinor = amount === undefined ? null : Math.round(Number(amount) * 100);
   return { eventId: event.id, type: event.event_type, providerCheckoutId: related.order_id || resource.id, checkoutId: resource.custom_id || resource.invoice_id || null, successful: event.event_type === "PAYMENT.CAPTURE.COMPLETED", failed: ["PAYMENT.CAPTURE.DENIED", "CHECKOUT.ORDER.VOIDED"].includes(event.event_type), providerPaymentId: event.event_type?.startsWith("PAYMENT.CAPTURE") ? resource.id : related.capture_id, amountMinor: Number.isFinite(amountMinor) ? amountMinor : null, currency: resource.amount?.currency_code?.toUpperCase() || null, raw: event };
+}
+
+export function refundEventDetails(provider, event) {
+  if (provider === "stripe") {
+    const object = event.data?.object || {}; const status = String(object.status || "pending").toLowerCase();
+    return { kind: "refund", eventId: event.id, type: event.type, refundId: object.metadata?.forma_refund_id || null, checkoutId: object.metadata?.forma_checkout_id || null, providerRefundId: object.id, providerPaymentId: typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id, status, successful: status === "succeeded", failed: ["failed", "canceled"].includes(status), amountMinor: Number.isInteger(object.amount) ? object.amount : null, currency: object.currency?.toUpperCase() || null, raw: event };
+  }
+  const resource = event.resource || {}; const related = resource.supplementary_data?.related_ids || {}; const amount = resource.amount?.value; const type = event.event_type; const status = type === "PAYMENT.CAPTURE.REFUNDED" || type === "PAYMENT.CAPTURE.REVERSED" ? "completed" : String(resource.status || (type === "PAYMENT.REFUND.FAILED" ? "failed" : "pending")).toLowerCase();
+  return { kind: "refund", eventId: event.id, type, refundId: resource.custom_id || null, checkoutId: resource.invoice_id || null, providerRefundId: type?.startsWith("PAYMENT.REFUND") ? resource.id : null, providerPaymentId: related.capture_id || (type?.startsWith("PAYMENT.CAPTURE") ? resource.id : null), status, successful: ["completed", "refunded", "reversed"].includes(status), failed: status === "failed", amountMinor: amount === undefined ? null : Math.round(Number(amount) * 100), currency: resource.amount?.currency_code?.toUpperCase() || null, raw: event };
+}
+
+export function disputeEventDetails(provider, event) {
+  if (provider === "stripe") {
+    const object = event.data?.object || {};
+    return { kind: "dispute", eventId: event.id, type: event.type, providerDisputeId: object.id, providerPaymentId: typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id, status: object.status || "open", reason: object.reason || "", amountMinor: Number.isInteger(object.amount) ? object.amount : null, currency: object.currency?.toUpperCase() || null, raw: event };
+  }
+  const resource = event.resource || {}; const transaction = resource.disputed_transactions?.[0] || {}; const amount = resource.dispute_amount?.value;
+  return { kind: "dispute", eventId: event.id, type: event.event_type, providerDisputeId: resource.dispute_id || resource.id, providerPaymentId: transaction.seller_transaction_id || transaction.seller_transaction?.id || null, status: resource.status || event.event_type?.split(".").at(-1)?.toLowerCase() || "open", reason: resource.reason || resource.dispute_reason || "", amountMinor: amount === undefined ? null : Math.round(Number(amount) * 100), currency: resource.dispute_amount?.currency_code?.toUpperCase() || null, raw: event };
+}
+
+export function providerEventDetails(provider, event) {
+  const type = provider === "stripe" ? event.type : event.event_type;
+  if (provider === "stripe" ? type?.startsWith("charge.dispute.") : type?.startsWith("CUSTOMER.DISPUTE.")) return disputeEventDetails(provider, event);
+  if (provider === "stripe" ? type?.startsWith("refund.") || type === "charge.refund.updated" : ["PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED", "PAYMENT.REFUND.PENDING", "PAYMENT.REFUND.FAILED"].includes(type)) return refundEventDetails(provider, event);
+  return { kind: "payment", ...paymentEventDetails(provider, event) };
 }
