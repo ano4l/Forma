@@ -55,6 +55,8 @@ The target schema lives in the ordered files under:
 supabase/migrations/
 ```
 
+Before production traffic, run `npm run production:check`. It verifies the local production configuration and remotely checks applied migration versions, Auth provider state, service-role access, the private bucket, the deployed readiness endpoint, and delivery/payment credentials without emitting secret values. The initial SQLite import and recovery workflow is documented in `docs/data-migration.md`.
+
 Recommended setup:
 
 ```powershell

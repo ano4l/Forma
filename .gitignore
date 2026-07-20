@@ -12,6 +12,7 @@ server.err.log
 .env.local
 .env.production
 .vercel/
+backups/
+cutover-bundles/
 .DS_Store
 Thumbs.db
-

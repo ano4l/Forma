@@ -24,10 +24,12 @@ Invoke `POST /api/internal/run-operations` with `X-Forma-Cron-Secret` at least e
 ## Backup and recovery
 
 1. Enable managed Supabase backups and point-in-time recovery appropriate to the production recovery objectives.
-2. Take an encrypted logical database export before migrations and at a regular off-platform cadence. Restrict and audit access to exports because they contain customer and financial data.
+2. Take an encrypted logical database export before migrations and at a regular off-platform cadence. Use `npm run data:export-hosted -- --workspace <uuid> --output <new-directory>` plus `npm run data:verify -- --bundle <directory>` for a tenant-bound, checksum-covered business-data and private-object inventory. Restrict and audit access to exports because they contain customer and financial data.
 3. Keep private Storage objects under the workspace UUID prefix and include the `forma-private` bucket in the backup inventory. Include `document_portal_links` and `workspace_invitations`; their stored values are hashes and cannot reconstruct a lost share secret.
 4. Quarterly, restore the latest database and object backup into an isolated project, rotate restored secrets, and verify sign-in, tenant isolation, document/PDF retrieval, outstanding balances, and provider-event idempotency.
 5. Record recovery time, recovery point, row counts, object counts, and any manual remediation. A backup is not considered valid until a restore drill succeeds.
+
+The executable SQLite cutover, hosted export, resume, verification, and restore-drill procedure is in `docs/data-migration.md`. Portable bundles deliberately exclude Supabase Auth users and workspace membership, so whole-project recovery still requires managed backup/PITR or an encrypted full logical database backup.
 
 For rollback, stop scheduled/provider delivery first, roll application traffic back to the last compatible revision, and restore data only when forward repair is unsafe. Never replay payment callbacks against a database restored to an earlier point without first comparing `provider_webhook_events`, `payment_checkouts`, and provider dashboards.
 
