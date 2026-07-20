@@ -38,6 +38,8 @@ SUPABASE_DB_URL=...
 FORMA_AUTH_MODE=required
 FORMA_AUTH_PROVIDERS=email,google,azure
 FORMA_DATA_BACKEND=supabase
+FORMA_RATE_LIMIT_PER_MINUTE=300
+FORMA_REQUEST_LOGS=true
 ```
 
 Important: Vercel function storage is ephemeral. Hosted mode does not depend on it: business records use Supabase Postgres and uploads use the private `forma-private` bucket. SQLite mode still requires a persistent volume and must not be used as a production database on Vercel.
@@ -117,4 +119,6 @@ Railway config is provided in `railway.json`. When moving from Vercel preview to
 2. Set `DATABASE_URL` and the same Resend variables.
 3. Keep `npm start` as the start command.
 4. Point health checks at `/api/health`.
-5. Apply all Supabase migrations and run the hosted Auth/RLS/Storage integration checklist before importing production data.
+5. Point health checks at `/api/ready`, apply all Supabase migrations, and run the hosted Auth/RLS/Storage integration checklist before importing production data.
+
+The production release, monitoring, scheduler, backup/restore, secret-rotation, rollback, and incident checklist is in `docs/operations.md`.
