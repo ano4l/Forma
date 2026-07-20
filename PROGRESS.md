@@ -7,7 +7,7 @@ Last updated: 2026-07-19
 Forma is now a working local-first receivables workspace, not a static invoice mockup. It supports invoices, quotes, and receipts through one durable SQLite document ledger with PDF output, lifecycle controls, configurable identity, reusable templates, and a responsive application shell.
 
 - Shared-document workflow milestone: approximately 95% complete.
-- Full hosted production SaaS brief: approximately 74% complete.
+- Full hosted production SaaS brief: approximately 82% complete.
 
 The second figure is deliberately lower: authentication, tenant isolation, real email and payment providers, secure object storage, scheduled work, and production operations require external infrastructure and credentials that are not present in this local environment.
 
@@ -63,6 +63,9 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Hosted data and private object adapter: every existing store operation now has an async Supabase/PostgREST implementation, all API routes support both synchronous SQLite and asynchronous hosted persistence, reads carry both RLS identity and an explicit workspace filter, and mutations inject the resolved workspace. Browser-authenticated roles have read-only table grants; server-only mutations are never exposed through the public configuration.
 - Atomic hosted workflows: document numbering/creation/finalization/transitions, quote conversion, payment-plus-receipt creation, delivery idempotency/completion, reminder claiming/completion, recurring runs, and default-payment-method changes execute inside Postgres functions. The functions lock or compare mutable rows, preserve audit records in the same transaction, and are callable only by the server role.
 - Private Supabase Storage integration: logos and supporting files use the `forma-private` bucket under workspace-UUID paths, metadata remains tenant-scoped, uploads clean up failed metadata/object pairs, downloads use authenticated Storage requests, and the browser hydrates protected images/attachments through authorized requests without exposing access tokens in URLs.
+- Production delivery operations: Resend callbacks are verified against raw bodies with the endpoint signing secret, provider event IDs are persisted idempotently, delivery history advances through sent/delivered/delayed/bounced/complained/failed/suppressed/opened/clicked states, permanent failures create workspace-scoped recipient suppressions, and transient failures are claimed for controlled retry.
+- Hosted payment operations: issued invoices can create Stripe Checkout or PayPal Orders links for a validated amount. Provider credentials remain server-only, create/capture calls carry idempotency keys, Stripe and PayPal callbacks are signature-verified, and service-only reconciliation atomically claims each event, inserts a payment, updates the invoice balance/status, and writes an audit record. Duplicate callbacks cannot double-record money. PayPal approval returns through an opaque capture route.
+- Scheduled operations endpoint: a timing-safe `FORMA_CRON_SECRET` boundary runs recurring generation, due reminders, and claimed email retries for every hosted workspace, while local mode can run the same workflow for development.
 
 ## Partially complete
 
@@ -70,8 +73,8 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Supporting-document attachments upload from both invoice entry flows. PDFs and supported images are signature-checked, stored locally or in private tenant-scoped Supabase Storage, listed on drafts, served through authenticated asset requests, and removable before issue. Malware scanning remains for production hardening.
 - Browser preview is a faithful local paper view; PDF is generated server-side from the same document/template selection but is not pixel-identical by design.
 - The legacy invoice API compatibility routes remain for existing integrations, but the SPA no longer exposes or initializes a separate invoice composer. They can be deprecated after external clients migrate to `/api/documents`.
-- Email templates and delivery history are functional locally, but the active provider defaults to `mock`; real provider adapters, verified domains, webhooks, and bounce handling remain absent.
-- Dashboard/reporting uses local ledger data; forecasting, formal tax reports, customer portals, automated hosted schedule execution, and background worker execution are not implemented.
+- Email templates, delivery history, Resend webhooks, suppression handling, and retries are implemented, but the active local provider defaults to `mock`; live domain verification and callback testing await provider credentials.
+- Dashboard/reporting uses ledger data; forecasting, formal tax reports, customer portals, and late-fee policy are not implemented. Hosted schedule execution is implemented behind a cron-secret endpoint but still needs a platform scheduler configured.
 - Supabase Auth, tenancy enforcement, the Postgres store, atomic workflow functions, and private Storage adapter are implemented across the schema, server, and browser boundaries. Live migration application, cross-user RLS testing, provider OAuth, confirmation email, and full hosted lifecycle verification await the supplied project/provider credentials.
 - All Supabase migrations parse successfully with a PostgreSQL 17-compatible parser. They have not yet been applied to a real Supabase project because project credentials/linkage have not been supplied.
 
@@ -79,8 +82,8 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 
 - Workspace invitation management UI and transactional invitation email delivery.
 - Hosted backup/PITR policy and production data migration from the local ledger.
-- Stripe/PayPal payments, webhooks, reconciliation, refunds, and hosted payment pages. The Resend email adapter is implemented but requires a verified sender, API key, provider credentials, and production webhook handling to be activated.
-- Retry queues, late fees, background jobs, and customer portal.
+- Provider-initiated refunds, dispute handling, partial refunds, and a branded customer document/payment portal. Stripe Checkout and PayPal payment links plus payment webhooks/reconciliation are implemented.
+- Late fees and a durable general-purpose worker queue. Delivery retry claiming and cron-triggered document operations are implemented without a separate queue service.
 - Advanced tax rules: inclusive/compound taxes, exemptions, multi-rate jurisdiction engines, and filing integrations.
 - Formal reports, analytics, API keys, webhooks, rate limits, observability, CI, deployment, and disaster recovery.
 
@@ -94,7 +97,7 @@ npm test
 $env:PORT='4175'; npm start
 ```
 
-Latest verified result (2026-07-19): `31` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, hosted-store activation only after tenant resolution, workspace creation RPC forwarding, session persistence and refresh, confirmation-required sign-up, OAuth callback capture, and logout. Adapter coverage proves explicit workspace filters and write payloads, private object-path enforcement, viewer read behavior, and server-only hosted route activation. Both hosted SQL migrations parse successfully, including the transactional workflow functions.
+Latest verified result (2026-07-19): `35` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime module. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, hosted-store activation only after tenant resolution, workspace creation RPC forwarding, session persistence and refresh, confirmation-required sign-up, OAuth callback capture, and logout. Adapter coverage proves explicit workspace filters and write payloads, private object-path enforcement, viewer read behavior, and server-only hosted route activation. Provider coverage proves atomic/idempotent payment reconciliation, Resend state/suppression handling, raw-body signature verification, PayPal OAuth/order amount conversion, and provider idempotency headers. All four hosted SQL migrations parse successfully; live application still awaits credentials.
 
 Live local verification was completed at `http://127.0.0.1:4179`:
 
@@ -120,6 +123,6 @@ Live local verification was completed at `http://127.0.0.1:4179`:
 ## Next priorities
 
 1. Apply the migrations to the supplied Supabase project, configure Google/Microsoft and Auth SMTP, then run owner/member/viewer cross-workspace RLS, Storage, and complete document-lifecycle integration tests.
-2. Complete Resend production delivery with verified-domain configuration, webhook processing, retries, bounce handling, and scheduled reminder execution.
-3. Add Stripe and PayPal payment links, provider webhooks, reconciliation, and a customer payment portal.
+2. Configure the Resend domain/webhook, Stripe and PayPal sandbox apps/webhooks, and the platform scheduler; run real provider acceptance, delayed-payment, duplicate-callback, bounce, and PayPal-return tests.
+3. Add provider refunds/disputes and a branded customer portal with secure document access and payment status.
 4. Add CI, deployment environments, monitoring, rate limits, audit retention/recovery, tax exports, analytics, and formal CSV/PDF reports.

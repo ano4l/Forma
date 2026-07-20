@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { createStore } from "./db.js";
@@ -11,6 +11,8 @@ import { parseQuickCreate } from "./parser.js";
 import { listTemplates } from "./templates.js";
 import { emailProviderStatus, sendTransactionalEmail } from "./email-provider.js";
 import { createAuthMiddleware, resolveAuthConfig } from "./auth.js";
+import { capturePayPalOrder, createHostedPayment, paymentEventDetails, paymentProviderStatus, verifyPayPalWebhook, verifyStripeWebhook } from "./payment-provider.js";
+import { resendEventDetails, verifyResendWebhook } from "./webhook-provider.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BRAND_LOGO = "VKT-logo.png";
@@ -53,9 +55,18 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   const normalizedBackend = String(dataBackend).trim().toLowerCase();
   const store = normalizedBackend === "supabase" ? createSupabaseStore({ getAuth: () => tenantContext.getStore() }) : createStore(database);
   app.locals.store = store;
-  app.use(express.json({ limit: "1mb" }));
   const route = (handler) => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
   const authMiddleware = createAuthMiddleware({ config: authOptions.config || resolveAuthConfig(), fetchImpl: authOptions.fetchImpl || globalThis.fetch });
+  const fetchImpl = authOptions.fetchImpl || globalThis.fetch;
+  const serviceFetch = authMiddleware.config.serviceRoleKey ? (apiPath, options = {}) => fetchImpl(`${authMiddleware.config.url}${apiPath}`, { ...options, headers: { apikey: authMiddleware.config.serviceRoleKey, Authorization: `Bearer ${authMiddleware.config.serviceRoleKey}`, ...(options.headers || {}) } }) : null;
+  const serviceRpc = async (name, body) => { if (!serviceFetch) throw Object.assign(new Error("The server-only Supabase mutation key is not configured"), { status: 503, code: "TENANT_STORE_NOT_CONFIGURED" }); const response = await serviceFetch(`/rest/v1/rpc/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const payload = await response.json().catch(() => null); if (!response.ok) throw Object.assign(new Error(payload?.message || "Provider event could not be reconciled"), { status: response.status, code: "PROVIDER_RECONCILIATION_FAILED" }); return payload; };
+  const processPaymentEvent = async (provider, details) => normalizedBackend === "supabase" ? serviceRpc("process_payment_provider_event", { target_provider: provider, target_event_id: details.eventId, target_event_type: details.type, target_checkout_id: details.checkoutId || null, target_provider_checkout_id: details.providerCheckoutId || null, target_provider_payment_id: details.providerPaymentId || null, target_amount: details.amountMinor, target_currency: details.currency, target_success: details.successful, target_failed: details.failed, target_payload: details.raw }) : store.processPaymentWebhook(provider, details);
+  const capturePaymentCheckout = async (checkout) => { if (!checkout || checkout.provider !== "paypal") throw Object.assign(new Error("PayPal payment checkout not found"), { status: 404, code: "NOT_FOUND" }); if (checkout.status === "paid") return { checkout, idempotent: true }; const captured = await capturePayPalOrder(checkout.provider_checkout_id, { fetchImpl, requestKey: `capture:${checkout.id}` }); const capture = captured.purchase_units?.flatMap((unit) => unit.payments?.captures || [])[0]; const event = { id: `paypal-capture:${capture?.id || captured.id}`, event_type: capture?.status === "COMPLETED" ? "PAYMENT.CAPTURE.COMPLETED" : "PAYMENT.CAPTURE.PENDING", resource: { ...(capture || {}), supplementary_data: { related_ids: { order_id: captured.id } } } }; return { checkout, provider: captured, reconciliation: await processPaymentEvent("paypal", paymentEventDetails("paypal", event)) }; };
+  app.post("/api/webhooks/resend", express.raw({ type: "application/json", limit: "512kb" }), route(async (req, res) => { const details = resendEventDetails(verifyResendWebhook(req.body, req.headers), req.get("svix-id")); const result = normalizedBackend === "supabase" ? await serviceRpc("process_resend_provider_event", { target_event_id: details.eventId, target_event_type: details.type, target_message_id: details.providerMessageId, target_status: details.status, target_terminal: details.terminalFailure, target_recipients: details.recipients, target_payload: details.raw }) : store.processResendWebhook(details); res.json({ received: true, duplicate: Boolean(result?.duplicate) }); }));
+  app.post("/api/webhooks/stripe", express.raw({ type: "application/json", limit: "512kb" }), route(async (req, res) => { const event = verifyStripeWebhook(req.body, req.get("stripe-signature")); const result = await processPaymentEvent("stripe", paymentEventDetails("stripe", event)); res.json({ received: true, duplicate: Boolean(result?.duplicate) }); }));
+  app.post("/api/webhooks/paypal", express.raw({ type: "application/json", limit: "512kb" }), route(async (req, res) => { const event = await verifyPayPalWebhook(req.body, req.headers, { fetchImpl }); const result = await processPaymentEvent("paypal", paymentEventDetails("paypal", event)); res.json({ received: true, duplicate: Boolean(result?.duplicate) }); }));
+  app.get("/api/public/payment-links/:id/paypal-return", route(async (req, res) => { try { const checkout = normalizedBackend === "supabase" ? await serviceRpc("get_payment_checkout_for_capture", { target_id: req.params.id }) : store.getPaymentCheckout(req.params.id); await capturePaymentCheckout(checkout); res.redirect(303, "/?payment=success"); } catch { res.redirect(303, "/?payment=failed"); } }));
+  app.use(express.json({ limit: "1mb" }));
   app.locals.authConfig = authMiddleware.publicConfig;
   app.locals.dataBackend = normalizedBackend;
   app.locals.tenantStoreReady = normalizedBackend === "supabase" && authMiddleware.publicConfig.configured && Boolean(authMiddleware.config.serviceRoleKey);
@@ -97,9 +108,37 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
     }
     return await store.completeDocumentEmail(documentId, started.attempt.id, delivery);
   }
+  async function runReminderOperations(asOf) {
+    const candidates = await store.listDueInvoiceReminders({ as_of: asOf }); const reminders = [];
+    for (const candidate of candidates) {
+      const claim = await store.claimInvoiceReminder(candidate); if (!claim.claimed) { reminders.push({ candidate, delivery: claim.delivery, skipped: true }); continue; }
+      let attempt; try { attempt = await sendDocumentEmail(candidate.document.id, { purpose: candidate.rule.purpose, request_key: `reminder:${candidate.rule.id}:${candidate.document.id}:${candidate.due_date}` }); } catch (cause) { attempt = { provider_status: "failed", provider_error: cause.message || "Reminder could not be sent" }; }
+      const delivery = await store.completeInvoiceReminderDelivery(claim.delivery.id, attempt);
+      if (["accepted", "accepted_mock", "sent", "delivered"].includes(String(attempt.provider_status || "")) && candidate.days_overdue > 0) { const current = await store.getDocument(candidate.document.id); if (current && ["finalized", "sent", "partially_paid"].includes(current.status)) await store.transitionDocument(current.id, "overdue", "overdue"); }
+      reminders.push({ candidate, attempt, delivery });
+    }
+    return reminders;
+  }
+  async function runWorkspaceOperations(asOf) {
+    const recurring = await store.runDueRecurringSchedules({ as_of: asOf }); const reminders = await runReminderOperations(asOf); const retries = [];
+    for (const attempt of await store.listRetryableEmailAttempts({ as_of: asOf ? `${asOf}T23:59:59.999Z` : undefined })) {
+      if (!await store.claimEmailRetry(attempt.id)) continue;
+      try { retries.push(await sendDocumentEmail(attempt.document_id, { ...attempt.rendered, purpose: attempt.template_purpose, request_key: `retry:${attempt.id}` })); } catch (cause) { retries.push({ source_attempt_id: attempt.id, provider_status: "failed", provider_error: cause.message }); }
+    }
+    return { recurring, reminders, retries };
+  }
+  const cronAuthorized = (req) => { const configured = String(process.env.FORMA_CRON_SECRET || ""); const supplied = String(req.get("x-forma-cron-secret") || req.get("authorization")?.replace(/^Bearer\s+/i, "") || ""); const a = Buffer.from(configured); const b = Buffer.from(supplied); return configured && a.length === b.length && timingSafeEqual(a, b); };
 
-  app.get("/api/health", async (req, res) => res.json({ ok: true, email: emailProviderStatus(), auth: { mode: authMiddleware.publicConfig.mode, configured: authMiddleware.publicConfig.configured }, data_backend: normalizedBackend }));
+  app.get("/api/health", async (req, res) => res.json({ ok: true, email: emailProviderStatus(), payments: paymentProviderStatus(), auth: { mode: authMiddleware.publicConfig.mode, configured: authMiddleware.publicConfig.configured }, data_backend: normalizedBackend }));
   app.get("/api/auth/config", async (req, res) => res.json({ data: authMiddleware.publicConfig }));
+  app.post("/api/internal/run-operations", route(async (req, res) => {
+    if (!process.env.FORMA_CRON_SECRET) throw Object.assign(new Error("Scheduled operations are not configured"), { status: 503, code: "CRON_NOT_CONFIGURED" });
+    if (!cronAuthorized(req)) throw Object.assign(new Error("Invalid scheduled operations credential"), { status: 401, code: "INVALID_CRON_CREDENTIAL" });
+    if (normalizedBackend !== "supabase") return res.json({ data: { local: await runWorkspaceOperations(req.body?.as_of) } });
+    const response = await serviceFetch("/rest/v1/workspaces?select=id&order=created_at.asc"); const workspaces = await response.json().catch(() => []); if (!response.ok) throw Object.assign(new Error("Workspaces could not be loaded for scheduled operations"), { status: 503, code: "CRON_WORKSPACE_LOAD_FAILED" }); const data = {};
+    for (const workspace of workspaces) data[workspace.id] = await tenantContext.run({ workspaceId: workspace.id, role: "owner", supabaseFetch: serviceFetch, serviceFetch }, () => runWorkspaceOperations(req.body?.as_of));
+    res.json({ data });
+  }));
   app.use("/api", authMiddleware);
   app.use("/api", (req, res, next) => normalizedBackend === "supabase" ? tenantContext.run(req.auth, next) : next());
   app.get("/api/session", async (req, res) => res.json({ data: { authenticated: Boolean(req.auth), user: req.auth?.user || null, memberships: req.auth?.memberships || [], workspace_id: req.auth?.workspaceId || null, role: req.auth?.role || null } }));
@@ -151,23 +190,7 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   app.post("/api/reminders/rules/:id/resume", route(async (req, res) => res.json({ data: await store.setReminderRuleActive(req.params.id, true) })));
   app.get("/api/reminders/due", route(async (req, res) => res.json({ data: await store.listDueInvoiceReminders({ as_of: req.query.as_of }) })));
   app.post("/api/reminders/run-due", route(async (req, res) => {
-    const asOf = req.body?.as_of; const candidates = await store.listDueInvoiceReminders({ as_of: asOf }); const reminders = [];
-    for (const candidate of candidates) {
-      const claim = await store.claimInvoiceReminder(candidate);
-      if (!claim.claimed) { reminders.push({ candidate, delivery: claim.delivery, skipped: true }); continue; }
-      let attempt;
-      try {
-        attempt = await sendDocumentEmail(candidate.document.id, { purpose: candidate.rule.purpose, request_key: `reminder:${candidate.rule.id}:${candidate.document.id}:${candidate.due_date}` });
-      } catch (cause) {
-        attempt = { provider_status: "failed", provider_error: cause.message || "Reminder could not be sent" };
-      }
-      const delivery = await store.completeInvoiceReminderDelivery(claim.delivery.id, attempt);
-      if (String(attempt.provider_status || "").startsWith("accepted") && candidate.days_overdue > 0) {
-        const current = await store.getDocument(candidate.document.id);
-        if (current && ["finalized", "sent", "partially_paid"].includes(current.status)) await store.transitionDocument(current.id, "overdue", "overdue");
-      }
-      reminders.push({ candidate, attempt, delivery });
-    }
+    const asOf = req.body?.as_of; const reminders = await runReminderOperations(asOf);
     res.status(202).json({ data: { reminders, rules: await store.listReminderRules(), due: await store.listDueInvoiceReminders({ as_of: asOf }) } });
   }));
   app.get("/api/exports/receivables.csv", route(async (req, res) => {
@@ -184,6 +207,20 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   app.post("/api/documents/:id/expire", route(async (req, res) => res.json({ data: await store.transitionDocument(req.params.id, "expired", "expired") })));
   app.post("/api/documents/:id/convert-to-invoice", route(async (req, res) => res.status(201).json({ data: await store.convertQuote(req.params.id) })));
   app.post("/api/documents/:id/record-payment", route(async (req, res) => res.status(201).json({ data: await store.recordPayment(req.params.id, req.body || {}) })));
+  app.post("/api/documents/:id/payment-links", route(async (req, res) => {
+    const requestKey = String(req.body?.request_key || req.get("idempotency-key") || randomUUID());
+    const started = await store.beginPaymentCheckout(req.params.id, { ...(req.body || {}), request_key: requestKey });
+    if (started.idempotent && started.checkout.checkout_url) return res.json({ data: started.checkout, idempotent: true });
+    const publicUrl = String(process.env.FORMA_PUBLIC_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+    try {
+      const providerResult = await createHostedPayment({ provider: started.checkout.provider, checkoutId: started.checkout.id, requestKey, workspaceId: req.auth?.workspaceId || "local", invoice: started.invoice, amountMinor: started.checkout.amount_minor, publicUrl }, { fetchImpl });
+      const checkout = await store.completePaymentCheckout(started.checkout.id, providerResult); res.status(201).json({ data: checkout, idempotent: false });
+    } catch (cause) { await store.completePaymentCheckout(started.checkout.id, { error: cause.message }).catch(() => null); throw cause; }
+  }));
+  app.get("/api/documents/:id/payment-links", route(async (req, res) => { found(await store.getDocument(req.params.id)); res.json({ data: await store.listPaymentCheckouts(req.params.id) }); }));
+  app.post("/api/payment-links/:id/capture", route(async (req, res) => {
+    const checkout = await store.getPaymentCheckout(req.params.id); if (!checkout) throw Object.assign(new Error("Payment checkout not found"), { status: 404, code: "NOT_FOUND" }); if (checkout.provider !== "paypal") throw Object.assign(new Error("Only PayPal orders require an explicit capture"), { status: 409, code: "CONFLICT" }); const result = await capturePaymentCheckout(checkout); res.json({ data: { ...result, checkout: await store.getPaymentCheckout(checkout.id) } });
+  }));
   app.post("/api/documents/:id/attachments", express.raw({ type: ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/svg+xml"], limit: MAX_ATTACHMENT_BYTES }), route(async (req, res) => {
     const document = found(await store.getDocument(req.params.id, { sensitive: true })); if (document.status !== "draft") throw Object.assign(new Error("Attachments can only be changed on drafts"), { status: 409, code: "CONFLICT" });
     const info = attachmentInfo(req.body, req.get("content-type")?.split(";")[0].trim().toLowerCase());

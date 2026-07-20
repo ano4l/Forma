@@ -356,7 +356,7 @@ function documentActionMarkup(document) {
   else actions.push(action("email", `${icon("send")}Compose email`));
   if (type === "quote" && status === "sent") actions.push(action("accept", "Accept"), action("decline", "Decline"));
   if (type === "quote" && status === "accepted") actions.push(action("convert", `${icon("copy")}Convert to invoice`, true));
-  if (type === "invoice" && ["finalized", "sent", "partially_paid", "overdue"].includes(status)) actions.push(action("payment", `${icon("check")}Record payment`, true));
+  if (type === "invoice" && ["finalized", "sent", "partially_paid", "overdue"].includes(status)) actions.push(action("payment-link", `${icon("send")}Create payment link`, true), action("payment", `${icon("check")}Record payment`));
   if (type === "invoice") actions.push(action("recurring", `${icon("copy")}Make recurring`));
   if (!["void", "voided", "paid", "converted"].includes(status)) actions.push(action("void", `${icon("trash")}Void`));
   return actions.join("");
@@ -364,7 +364,7 @@ function documentActionMarkup(document) {
 function emailHistoryMarkup() {
   const attempts = state.documentEmailHistory || [];
   if (!attempts.length) return `<p class="panel-sub">No delivery attempts recorded yet.</p>`;
-  return `<div class="email-history">${attempts.slice(0, 5).map((attempt) => { const accepted = String(attempt.provider_status || "").startsWith("accepted"); const recipients = (attempt.recipients || []).join(", ") || "No recipient"; return `<div class="email-history-row ${accepted ? "accepted" : "failed"}"><span><strong>${accepted ? "Accepted" : "Not delivered"}</strong><small>${escapeHtml(recipients)} · ${escapeHtml(attempt.provider || "provider")} · ${new Date(attempt.created_at).toLocaleString("en-ZA", { dateStyle: "medium", timeStyle: "short" })}</small>${attempt.provider_error ? `<small class="email-error">${escapeHtml(attempt.provider_error)}</small>` : ""}</span>${accepted ? "" : `<button class="link-btn" data-retry-document-email>Retry</button>`}</div>`; }).join("")}</div>`;
+  return `<div class="email-history">${attempts.slice(0, 5).map((attempt) => { const status = String(attempt.provider_status || ""); const accepted = status.startsWith("accepted") || ["sent", "scheduled", "delivered", "opened", "clicked"].includes(status); const retryable = ["provider_error", "failed", "delayed"].includes(status); const recipients = (attempt.recipients || []).join(", ") || "No recipient"; return `<div class="email-history-row ${accepted ? "accepted" : "failed"}"><span><strong>${escapeHtml(status.replaceAll("_", " ") || "Unknown")}</strong><small>${escapeHtml(recipients)} · ${escapeHtml(attempt.provider || "provider")} · ${new Date(attempt.created_at).toLocaleString("en-ZA", { dateStyle: "medium", timeStyle: "short" })}</small>${attempt.provider_error ? `<small class="email-error">${escapeHtml(attempt.provider_error)}</small>` : ""}</span>${retryable ? `<button class="link-btn" data-retry-document-email>Retry</button>` : ""}</div>`; }).join("")}</div>`;
 }
 
 function renderDocumentEditor() {
@@ -674,6 +674,23 @@ async function recordPayment() {
     state.document = result.invoice || await api(`/api/documents/${state.document.id}`); $("#modal").close(); await Promise.all([refreshDocuments(), refreshReminders()]); render(); toast(result.receipt ? "Payment and receipt recorded" : "Payment recorded");
   } catch (error) { toast(`Payment not recorded: ${error.message}`, "error"); }
 }
+async function openPaymentLinkDialog() {
+  const balance = state.document?.balance_due_minor ?? documentTotal(state.document);
+  try {
+    const links = await api(`/api/documents/${state.document.id}/payment-links`);
+    const history = links.length ? `<div class="email-history">${links.slice(0, 4).map((link) => `<div class="email-history-row ${link.status === "paid" ? "accepted" : ""}"><span><strong>${escapeHtml(link.provider.toUpperCase())} &middot; ${escapeHtml(link.status)}</strong><small>${money(link.amount_minor, link.currency)} &middot; ${new Date(link.created_at).toLocaleString("en-ZA", { dateStyle: "medium", timeStyle: "short" })}</small></span>${link.checkout_url ? `<a class="link-btn" href="${escapeHtml(link.checkout_url)}" target="_blank" rel="noopener">Open</a>` : ""}</div>`).join("")}</div>` : `<p class="panel-sub">No payment links have been created for this invoice.</p>`;
+    $("#modalContent").innerHTML = `<h2>Create hosted payment link</h2><p class="lead">The provider collects payment securely. Forma records the payment only after a verified provider event.</p><div class="field-grid"><div class="field"><label for="paymentLinkProvider">Provider</label><div class="input-wrap"><select id="paymentLinkProvider"><option value="stripe">Stripe Checkout</option><option value="paypal">PayPal</option></select></div></div>${simpleInput("Amount", "paymentLinkAmount", (balance / 100).toFixed(2), "number", { min: 0.01, step: 0.01 })}</div><div id="paymentLinkResult">${history}</div><div class="modal-actions"><button class="btn" value="cancel">Close</button><button class="btn primary" type="button" id="createPaymentLink">Create link</button></div>`;
+    $("#modal").showModal(); $("#createPaymentLink").onclick = createPaymentLink;
+  } catch (error) { toast(`Payment links could not be loaded: ${error.message}`, "error"); }
+}
+async function createPaymentLink() {
+  const button = $("#createPaymentLink"); button.disabled = true;
+  try {
+    const checkout = await api(`/api/documents/${state.document.id}/payment-links`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ provider: $("#paymentLinkProvider").value, amount_minor: Math.round((Number($("#paymentLinkAmount").value) || 0) * 100) }) });
+    $("#paymentLinkResult").innerHTML = `<div class="email-compose-note"><strong>Payment link ready</strong><p>${escapeHtml(checkout.provider.toUpperCase())} will collect ${money(checkout.amount_minor, checkout.currency)}.</p><div class="modal-actions"><button class="btn" type="button" id="copyPaymentLink">Copy link</button><a class="btn primary" href="${escapeHtml(checkout.checkout_url)}" target="_blank" rel="noopener">Open checkout</a></div></div>`;
+    $("#copyPaymentLink").onclick = async () => { await navigator.clipboard.writeText(checkout.checkout_url); toast("Payment link copied"); }; toast("Payment link created");
+  } catch (error) { toast(`Payment link not created: ${error.message}`, "error"); button.disabled = false; }
+}
 async function runDocumentAction(action) {
   if (!state.document) return;
   if (state.document.status === "draft") {
@@ -682,6 +699,7 @@ async function runDocumentAction(action) {
   }
   if (action === "email") return openEmailCompose();
   if (action === "payment") return openPaymentDialog();
+  if (action === "payment-link") return openPaymentLinkDialog();
   if (action === "recurring") return openRecurringScheduleModal(state.document.id);
   try {
     const response = await api(`/api/documents/${state.document.id}/${action === "convert" ? "convert-to-invoice" : action}`, { method: "POST", body: "{}" });

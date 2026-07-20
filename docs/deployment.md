@@ -1,4 +1,4 @@
-# VirtuDoc deployment stack
+# Forma deployment stack
 
 This app is a Node/Express document workspace with a local SQLite store by default. The repository is configured for Vercel previews, Supabase as the hosted Postgres target, Resend transactional email, and a later Railway cutover for a persistent Node runtime.
 
@@ -22,6 +22,15 @@ FORMA_UPLOAD_DIR=/tmp/forma-uploads
 FORMA_EMAIL_PROVIDER=resend
 FORMA_RESEND_API_KEY=...
 FORMA_EMAIL_FROM="Forma <billing@yourdomain.com>"
+FORMA_RESEND_WEBHOOK_SECRET=...
+FORMA_PUBLIC_URL=https://app.yourdomain.com
+FORMA_CRON_SECRET=...
+FORMA_STRIPE_SECRET_KEY=...
+FORMA_STRIPE_WEBHOOK_SECRET=...
+FORMA_PAYPAL_ENV=live
+FORMA_PAYPAL_CLIENT_ID=...
+FORMA_PAYPAL_CLIENT_SECRET=...
+FORMA_PAYPAL_WEBHOOK_ID=...
 SUPABASE_URL=...
 SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
@@ -35,10 +44,10 @@ Important: Vercel function storage is ephemeral. Hosted mode does not depend on 
 
 ## Supabase
 
-The target schema lives in:
+The target schema lives in the ordered files under:
 
 ```text
-supabase/migrations/20260712000000_init_virtudoc.sql
+supabase/migrations/
 ```
 
 Recommended setup:
@@ -81,6 +90,22 @@ FORMA_EMAIL_FROM="Forma <billing@yourdomain.com>"
 ```
 
 Every document send includes a generated PDF attachment and an `Idempotency-Key`. Provider acceptance is recorded before drafts become sent; provider failures are stored without finalizing the draft.
+
+Create a Resend webhook for `https://app.yourdomain.com/api/webhooks/resend`, subscribe to sent/delivered/delayed/bounced/complained/failed/suppressed/opened/clicked events, and copy its signing secret to `FORMA_RESEND_WEBHOOK_SECRET`. The endpoint verifies the Svix signature against the untouched request body, stores each event once, updates delivery history, schedules transient retries, and suppresses recipients after permanent failures.
+
+## Hosted payments
+
+Stripe Checkout and PayPal Orders are available from an issued invoice's **Create payment link** action. Configure the providers independently; the UI returns a provider-hosted URL and Forma records money only after a verified event is reconciled against the original checkout amount.
+
+- Stripe webhook: `https://app.yourdomain.com/api/webhooks/stripe`. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, and `checkout.session.async_payment_failed`; store the endpoint secret as `FORMA_STRIPE_WEBHOOK_SECRET`.
+- PayPal webhook: `https://app.yourdomain.com/api/webhooks/paypal`. At minimum subscribe to `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, and `CHECKOUT.ORDER.VOIDED`; store the webhook ID as `FORMA_PAYPAL_WEBHOOK_ID`.
+- Set `FORMA_PUBLIC_URL` to the exact HTTPS application origin. PayPal returns to a one-time opaque checkout route which captures the approved order and redirects to the app.
+
+Provider event IDs and payment references are unique. Duplicate callbacks return success without recording a second payment. Hosted Postgres performs event claim, invoice balance change, payment insert, and audit insert in one service-only transaction.
+
+## Scheduled operations
+
+Call `POST /api/internal/run-operations` with `X-Forma-Cron-Secret: <FORMA_CRON_SECRET>` from the platform scheduler. One invocation runs due recurring invoices, reminder delivery, and claimed transient email retries for every workspace. An optional JSON body can supply `{"as_of":"YYYY-MM-DD"}` for controlled testing. The route is unavailable until a secret is configured.
 
 Legacy `MONEYFY_*` runtime variables remain accepted during migration, but new environments should use the `FORMA_*` names above.
 

@@ -1,20 +1,22 @@
 {
-  "name": "virtudoc",
+  "name": "forma-invoice-generator",
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Production-oriented invoice, quote, receipt, and receivables workflow for VirtuDoc.",
+  "description": "Production-oriented invoice, quote, receipt, and receivables workflow for Forma.",
   "engines": {
     "node": ">=22 <25"
   },
   "scripts": {
-    "build": "node --check app.js && node --check auth.js && node --check supabase-browser.js && node --check supabase-store.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check parser.js && node --check pdf.js && node --check templates.js",
+    "build": "node --check app.js && node --check auth.js && node --check supabase-browser.js && node --check supabase-store.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check payment-provider.js && node --check webhook-provider.js && node --check parser.js && node --check pdf.js && node --check templates.js",
     "dev": "node --watch server.js",
     "start": "node server.js",
     "test": "node --test"
   },
   "dependencies": {
     "express": "^5.1.0",
-    "pdfkit": "^0.17.2"
+    "pdfkit": "^0.17.2",
+    "stripe": "^22.3.2",
+    "svix": "^1.98.0"
   }
 }
