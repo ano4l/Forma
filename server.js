@@ -17,6 +17,7 @@ import { createObservability } from "./observability.js";
 import { agingCsv, agingReport, collectionForecast, collectionForecastCsv, renderReceivablesReportPdf, taxCsv, taxReport } from "./reporting.js";
 import { malwareScannerStatus, scanUpload } from "./malware-scanner.js";
 import { createRateLimiter } from "./rate-limiter.js";
+import { normalizeBusinessLogo } from "./image-processing.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BRAND_LOGO = "VKT-logo.png";
@@ -44,7 +45,11 @@ function imageInfo(buffer, contentType) {
   if (contentType === "image/png" && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return { extension: "png", contentType };
   if (contentType === "image/jpeg" && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { extension: "jpg", contentType };
   if (contentType === "image/webp" && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return { extension: "webp", contentType };
-  if (contentType === "image/svg+xml") { const source = buffer.toString("utf8").replace(/^\uFEFF/, "").trim(); if (/^<svg[\s>]/i.test(source) && !/<script\b|<foreignObject\b|\son\w+\s*=/i.test(source)) return { extension: "svg", contentType }; }
+  if (contentType === "image/svg+xml") {
+    const source = buffer.toString("utf8").replace(/^\uFEFF/, "").trim().replace(/^<\?xml[^>]*>\s*/i, "");
+    const unsafe = /<!doctype\b|<!entity\b|<script\b|<foreignObject\b|<image\b|<iframe\b|<object\b|<embed\b|<link\b|<style\b|\son\w+\s*=|(?:href|xlink:href)\s*=\s*["'](?!#)|url\s*\(\s*(?!["']?#)/i;
+    if (/^<svg[\s>]/i.test(source) && !unsafe.test(source)) return { extension: "svg", contentType };
+  }
   throw Object.assign(new Error("Upload a valid PNG, JPG, WebP, or safe SVG image"), { status: 422, code: "VALIDATION_ERROR" });
 }
 function attachmentInfo(buffer, contentType) {
@@ -111,7 +116,11 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
     const managedAsset = logoUrl.match(/^\/api\/assets\/([0-9a-f-]+)$/i);
     if (managedAsset) {
       const asset = await store.getMediaAsset(managedAsset[1]);
-      if (asset && ["image/png", "image/jpeg"].includes(asset.content_type)) return readAsset(asset);
+      if (asset && ["image/png", "image/jpeg", "image/webp", "image/svg+xml"].includes(asset.content_type)) {
+        const content = await readAsset(asset);
+        if (["image/png", "image/jpeg"].includes(asset.content_type)) return content;
+        if (content) return normalizeBusinessLogo(content).then((result) => result.content).catch(() => null);
+      }
     }
     if (/^data:image\/(?:png|jpeg);base64,/i.test(logoUrl)) {
       const encoded = logoUrl.slice(logoUrl.indexOf(",") + 1);
@@ -199,11 +208,12 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
     const info = imageInfo(req.body, req.get("content-type")?.split(";")[0].trim().toLowerCase());
     const filename = safeFilename(req.get("x-file-name"));
     await scanFile({ content: req.body, filename, contentType: info.contentType, kind: "business_logo" });
-    const id = randomUUID(); const storageKey = hostedStorage ? path.posix.join(req.auth.workspaceId, "logos", `${id}.${info.extension}`) : path.posix.join("logos", `${id}.${info.extension}`); const pendingAsset = { storage_key: storageKey, content_type: info.contentType };
-    await writeAsset(pendingAsset, req.body);
+    const normalized = await normalizeBusinessLogo(req.body);
+    const id = randomUUID(); const storageKey = hostedStorage ? path.posix.join(req.auth.workspaceId, "logos", `${id}.${normalized.extension}`) : path.posix.join("logos", `${id}.${normalized.extension}`); const pendingAsset = { storage_key: storageKey, content_type: normalized.contentType };
+    await writeAsset(pendingAsset, normalized.content);
     let savedAsset = null;
     try {
-      savedAsset = await store.saveMediaAsset({ id, storage_key: storageKey, filename, content_type: info.contentType, byte_size: req.body.length });
+      savedAsset = await store.saveMediaAsset({ id, storage_key: storageKey, filename, content_type: normalized.contentType, byte_size: normalized.content.length });
       const profile = await store.saveBusinessProfile({ ...await store.getBusinessProfile(), logo_url: `/api/assets/${savedAsset.id}` });
       res.status(201).json({ data: { asset: { ...savedAsset, url: `/api/assets/${savedAsset.id}` }, profile } });
     } catch (cause) { if (savedAsset) await Promise.resolve(store.deleteMediaAsset(savedAsset.id)).catch(() => null); await removeAsset(pendingAsset); throw cause; }

@@ -319,6 +319,17 @@ test("generic APIs render all template/page/type combinations and mock sends are
     assert.match(brandedPdf, /\/Width 1\b/);
     assert.match(brandedPdf, /\/Height 1\b/);
 
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#7f56d9"/></svg>');
+    response = await fetch(`${base}/api/business-logo`, { method: "POST", headers: { "Content-Type": "image/svg+xml", "X-File-Name": "forma-vector.svg" }, body: svg });
+    assert.equal(response.status, 201); const vectorUpload = (await response.json()).data;
+    assert.equal(vectorUpload.asset.content_type, "image/png");
+    response = await fetch(`${base}${vectorUpload.asset.url}`); const normalizedVector = Buffer.from(await response.arrayBuffer());
+    assert.equal(response.headers.get("content-type"), "image/png");
+    assert.ok(normalizedVector.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
+    const vectorDocument = (await (await fetch(`${base}/api/documents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...valid(undefined, { supplier: { ...valid().supplier, logo_url: vectorUpload.asset.url } }), document_type: "invoice" }) })).json()).data;
+    response = await fetch(`${base}/api/documents/${vectorDocument.id}/pdf`); const vectorPdf = Buffer.from(await response.arrayBuffer()).toString("latin1");
+    assert.equal(response.status, 200); assert.match(vectorPdf, /\/Subtype \/Image/);
+
     response = await fetch(base);
     assert.equal(response.status, 200);
     const html = await response.text();
@@ -328,12 +339,14 @@ test("generic APIs render all template/page/type combinations and mock sends are
     assert.equal(response.headers.get("content-type"), "image/png");
     response = await fetch(`${base}/api/business-logo`, { method: "POST", headers: { "Content-Type": "image/png" }, body: Buffer.from("not-a-png") });
     assert.equal(response.status, 422);
+    response = await fetch(`${base}/api/business-logo`, { method: "POST", headers: { "Content-Type": "image/svg+xml" }, body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><image href="https://attacker.invalid/logo.png"/></svg>') });
+    assert.equal(response.status, 422);
 
     const attachmentDocument = (await (await fetch(`${base}/api/documents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...valid(undefined), document_type: "invoice" }) })).json()).data;
     response = await fetch(`${base}/api/documents/${attachmentDocument.id}/attachments`, { method: "POST", headers: { "Content-Type": "application/pdf", "X-File-Name": "scope.pdf" }, body: Buffer.from("%PDF-1.7\nattachment") });
     assert.equal(response.status, 201); const attachmentUpload = (await response.json()).data;
     assert.equal(attachmentUpload.document.data.attachments.length, 1);
-    assert.deepEqual(scans.map((scan) => [scan.kind, scan.filename, scan.contentType]), [["business_logo", "forma.png", "image/png"], ["document_attachment", "scope.pdf", "application/pdf"]]);
+    assert.deepEqual(scans.map((scan) => [scan.kind, scan.filename, scan.contentType]), [["business_logo", "forma.png", "image/png"], ["business_logo", "forma-vector.svg", "image/svg+xml"], ["document_attachment", "scope.pdf", "application/pdf"]]);
     const uploadedAttachment = attachmentUpload.attachment;
     response = await fetch(`${base}${uploadedAttachment.url}`); assert.equal(response.status, 200); assert.equal(response.headers.get("content-type"), "application/pdf");
     response = await fetch(`${base}/api/documents/${attachmentDocument.id}/attachments/${uploadedAttachment.asset_id}`, { method: "DELETE" });

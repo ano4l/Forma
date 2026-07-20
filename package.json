@@ -8,7 +8,7 @@
     "node": ">=22 <25"
   },
   "scripts": {
-    "build": "node --check app.js && node --check portal.js && node --check auth.js && node --check supabase-browser.js && node --check supabase-store.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check payment-provider.js && node --check webhook-provider.js && node --check observability.js && node --check reporting.js && node --check malware-scanner.js && node --check rate-limiter.js && node --check postgres-client.js && node --check parser.js && node --check pdf.js && node --check templates.js && node --check scripts/forma-data.mjs && node --check scripts/check-production-readiness.mjs",
+    "build": "node --check app.js && node --check portal.js && node --check auth.js && node --check supabase-browser.js && node --check supabase-store.js && node --check db.js && node --check server.js && node --check email.js && node --check email-provider.js && node --check payment-provider.js && node --check webhook-provider.js && node --check observability.js && node --check reporting.js && node --check malware-scanner.js && node --check rate-limiter.js && node --check postgres-client.js && node --check image-processing.js && node --check parser.js && node --check pdf.js && node --check templates.js && node --check scripts/forma-data.mjs && node --check scripts/check-production-readiness.mjs",
     "dev": "node --env-file-if-exists=.env.local --watch server.js",
     "start": "node --env-file-if-exists=.env.local server.js",
     "test": "node --test",
@@ -23,6 +23,7 @@
     "express": "^5.1.0",
     "pdfkit": "^0.17.2",
     "pg": "^8.22.0",
+    "sharp": "^0.35.3",
     "stripe": "^22.3.2",
     "svix": "^1.98.0"
   }
