@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createStore } from "../db.js";
 import { evaluateConfiguration, summarizeReadiness } from "../scripts/check-production-readiness.mjs";
-import { exportBundle, verifyBundle } from "../scripts/forma-data.mjs";
+import { exportBundle, postgresClientConfig, verifyBundle } from "../scripts/forma-data.mjs";
 
 const WORKSPACE_ID = "7d243f7c-7691-4f72-b7b9-2a4750a06e34";
 
@@ -56,6 +57,29 @@ test("bundle verification rejects a changed table", async () => {
   } finally { rmSync(box.directory, { recursive: true, force: true }); }
 });
 
+test("bundle verification rejects schema drift even when checksums were regenerated", async () => {
+  const box = fixture();
+  try {
+    await exportBundle({ database: box.database, output: box.output, workspaceId: WORKSPACE_ID, uploadDir: box.uploadDir });
+    const tablePath = path.join(box.output, "tables", "documents.json");
+    const rows = JSON.parse(readFileSync(tablePath, "utf8"));
+    delete rows[0].status;
+    const body = `${JSON.stringify(rows, null, 2)}\n`;
+    writeFileSync(tablePath, body);
+    const manifestPath = path.join(box.output, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.tables.documents.sha256 = createHash("sha256").update(body).digest("hex");
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await assert.rejects(() => verifyBundle(box.output), /Missing columns in documents: status/);
+  } finally { rmSync(box.directory, { recursive: true, force: true }); }
+});
+
+test("PostgreSQL operations verify remote TLS and disable it only for loopback", () => {
+  assert.deepEqual(postgresClientConfig("postgresql://postgres:secret@db.example.com:5432/postgres").ssl, { rejectUnauthorized: true });
+  assert.equal(postgresClientConfig("postgresql://postgres:secret@127.0.0.1:5432/postgres").ssl, false);
+  assert.throws(() => postgresClientConfig("https://db.example.com/postgres"), /must use postgres/);
+});
+
 test("production configuration gate identifies a complete secret layout without exposing values", () => {
   const environment = {
     NODE_ENV: "production",
@@ -63,9 +87,14 @@ test("production configuration gate identifies a complete secret layout without 
     FORMA_DATA_BACKEND: "supabase",
     FORMA_PUBLIC_URL: "https://forma.example.com",
     FORMA_RATE_LIMIT_PER_MINUTE: "300",
+    FORMA_RATE_LIMIT_REDIS_URL: "https://redis.example.com",
+    FORMA_RATE_LIMIT_REDIS_TOKEN: "redis-token-value",
+    FORMA_RATE_LIMIT_KEY_SECRET: "r".repeat(32),
     FORMA_CRON_SECRET: "c".repeat(32),
     FORMA_METRICS_SECRET: "m".repeat(32),
     FORMA_REQUEST_LOGS: "true",
+    FORMA_MALWARE_SCAN_URL: "https://scanner.example.com/v1/scan",
+    FORMA_MALWARE_SCAN_SECRET: "s".repeat(32),
     SUPABASE_URL: "https://project.supabase.co",
     SUPABASE_PUBLISHABLE_KEY: "publishable-value",
     SUPABASE_SERVICE_ROLE_KEY: "service-secret-value",

@@ -2,6 +2,8 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { postgresClientConfig } from "../postgres-client.js";
+import { scanUpload } from "../malware-scanner.js";
 
 const { Client } = pg;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -18,9 +20,14 @@ export function evaluateConfiguration(environment = process.env) {
   add(checks, "runtime.backend", environment.FORMA_DATA_BACKEND === "supabase", "FORMA_DATA_BACKEND is supabase");
   add(checks, "runtime.public_url", httpsUrl(environment.FORMA_PUBLIC_URL), "FORMA_PUBLIC_URL is an HTTPS origin");
   add(checks, "runtime.rate_limit", Number(environment.FORMA_RATE_LIMIT_PER_MINUTE) > 0, "A positive API rate limit is configured");
+  add(checks, "runtime.rate_limit_redis", httpsUrl(environment.FORMA_RATE_LIMIT_REDIS_URL), "An HTTPS distributed rate-limit store is configured");
+  add(checks, "runtime.rate_limit_token", String(environment.FORMA_RATE_LIMIT_REDIS_TOKEN || "").length >= 16, "Distributed rate-limit token is configured");
+  add(checks, "runtime.rate_limit_key", String(environment.FORMA_RATE_LIMIT_KEY_SECRET || "").length >= 24, "Rate-limit identity HMAC secret is at least 24 characters");
   add(checks, "runtime.cron_secret", String(environment.FORMA_CRON_SECRET || "").length >= 24, "Scheduler secret is at least 24 characters");
   add(checks, "runtime.metrics_secret", String(environment.FORMA_METRICS_SECRET || "").length >= 24, "Metrics secret is at least 24 characters");
   add(checks, "runtime.request_logs", environment.FORMA_REQUEST_LOGS === "true", "Structured production request logs are enabled");
+  add(checks, "uploads.malware_url", httpsUrl(environment.FORMA_MALWARE_SCAN_URL), "An HTTPS malware scanner is configured");
+  add(checks, "uploads.malware_secret", String(environment.FORMA_MALWARE_SCAN_SECRET || "").length >= 24, "Malware-scanner secret is at least 24 characters");
 
   add(checks, "supabase.url", httpsUrl(environment.SUPABASE_URL), "Supabase URL is configured with HTTPS");
   add(checks, "supabase.publishable_key", present(publishable), "Supabase publishable key is configured");
@@ -34,7 +41,8 @@ export function evaluateConfiguration(environment = process.env) {
   add(checks, "email.sender", /<[^<>\s@]+@[^<>\s@]+>$/.test(String(environment.FORMA_EMAIL_FROM || "")) || /^[^\s@]+@[^\s@]+$/.test(String(environment.FORMA_EMAIL_FROM || "")), "Resend sender address is configured");
   add(checks, "email.webhook", present(environment.FORMA_RESEND_WEBHOOK_SECRET), "Resend webhook verification secret is configured");
 
-  add(checks, "stripe.secret", /^sk_(test|live)_/.test(String(environment.FORMA_STRIPE_SECRET_KEY || "")), "Stripe secret key is configured");
+  const stripeKey = String(environment.FORMA_STRIPE_SECRET_KEY || "");
+  add(checks, "stripe.secret", environment.NODE_ENV === "production" ? /^sk_live_/.test(stripeKey) : /^sk_(test|live)_/.test(stripeKey), environment.NODE_ENV === "production" ? "Stripe live secret key is configured" : "Stripe secret key is configured");
   add(checks, "stripe.webhook", /^whsec_/.test(String(environment.FORMA_STRIPE_WEBHOOK_SECRET || "")), "Stripe webhook secret is configured");
   add(checks, "paypal.environment", environment.FORMA_PAYPAL_ENV === "live", "PayPal is configured for live mode");
   add(checks, "paypal.client", present(environment.FORMA_PAYPAL_CLIENT_ID) && present(environment.FORMA_PAYPAL_CLIENT_SECRET), "PayPal client credentials are configured");
@@ -64,7 +72,7 @@ function serviceHeaders(environment) {
 async function checkMigrations(checks, environment) {
   if (!present(environment.SUPABASE_DB_URL)) return add(checks, "supabase.migrations", false, "All repository migrations are applied");
   const local = (await readdir(path.join(root, "supabase", "migrations"))).filter((file) => file.endsWith(".sql")).map((file) => file.split("_")[0]).sort();
-  const client = new Client({ connectionString: environment.SUPABASE_DB_URL, ssl: environment.SUPABASE_DB_URL.includes("localhost") ? undefined : { rejectUnauthorized: false }, connectionTimeoutMillis: 10_000 });
+  const client = new Client({ ...postgresClientConfig(environment.SUPABASE_DB_URL), connectionTimeoutMillis: 10_000 });
   try {
     await client.connect();
     const result = await client.query("SELECT version FROM supabase_migrations.schema_migrations ORDER BY version");
@@ -102,6 +110,10 @@ export async function runRemoteChecks(environment = process.env) {
     await fetchCheck(checks, "app.readiness", `${String(environment.FORMA_PUBLIC_URL).replace(/\/$/, "")}/api/ready`, {}, (body) => body.ready === true && body.data_backend === "supabase", "Deployed application reports hosted readiness");
   } else add(checks, "app.readiness", false, "Deployed application reports hosted readiness");
 
+  if (httpsUrl(environment.FORMA_RATE_LIMIT_REDIS_URL) && present(environment.FORMA_RATE_LIMIT_REDIS_TOKEN)) {
+    await fetchCheck(checks, "runtime.rate_limit_store", String(environment.FORMA_RATE_LIMIT_REDIS_URL).replace(/\/$/, ""), { method: "POST", headers: { authorization: `Bearer ${environment.FORMA_RATE_LIMIT_REDIS_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(["PING"]) }, (body) => body.result === "PONG", "Distributed rate-limit store responds to PING");
+  } else add(checks, "runtime.rate_limit_store", false, "Distributed rate-limit store responds to PING");
+
   if (present(environment.FORMA_RESEND_API_KEY)) {
     const sender = String(environment.FORMA_EMAIL_FROM || "").match(/@([^>\s]+)>?$/)?.[1]?.toLowerCase();
     await fetchCheck(checks, "email.domain_verified", "https://api.resend.com/domains", { headers: { authorization: `Bearer ${environment.FORMA_RESEND_API_KEY}` } }, (body) => Array.isArray(body.data) && body.data.some((domain) => domain.name?.toLowerCase() === sender && domain.status === "verified"), "Resend sender domain is verified");
@@ -115,6 +127,13 @@ export async function runRemoteChecks(environment = process.env) {
     const paypalUrl = environment.FORMA_PAYPAL_ENV === "live" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
     await fetchCheck(checks, "paypal.credentials", `${paypalUrl}/v1/oauth2/token`, { method: "POST", headers: { authorization: `Basic ${Buffer.from(`${environment.FORMA_PAYPAL_CLIENT_ID}:${environment.FORMA_PAYPAL_CLIENT_SECRET}`).toString("base64")}`, "content-type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials" }, (body) => present(body.access_token), "PayPal credentials are accepted");
   } else add(checks, "paypal.credentials", false, "PayPal credentials are accepted");
+
+  if (httpsUrl(environment.FORMA_MALWARE_SCAN_URL) && present(environment.FORMA_MALWARE_SCAN_SECRET)) {
+    try {
+      const scan = await scanUpload({ content: Buffer.from("Forma malware-scanner readiness probe"), filename: "forma-readiness.txt", contentType: "text/plain", kind: "readiness_probe" }, { environment });
+      add(checks, "uploads.malware_scanner", scan.clean && scan.scanned, "Malware scanner accepts and verifies a clean probe");
+    } catch { add(checks, "uploads.malware_scanner", false, "Malware scanner accepts and verifies a clean probe"); }
+  } else add(checks, "uploads.malware_scanner", false, "Malware scanner accepts and verifies a clean probe");
   return checks;
 }
 

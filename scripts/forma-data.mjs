@@ -4,11 +4,14 @@ import { mkdir, readFile, realpath, stat, writeFile, copyFile, lstat } from "nod
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { postgresClientConfig } from "../postgres-client.js";
 
 const { Client } = pg;
 export const BUNDLE_FORMAT = "forma-portable-backup";
 export const BUNDLE_VERSION = 1;
 export const STORAGE_BUCKET = "forma-private";
+const REMOTE_OPERATION_TIMEOUT_MS = 60_000;
+export { postgresClientConfig } from "../postgres-client.js";
 
 const TABLES = {
   settings: ["key", "value"],
@@ -222,8 +225,11 @@ export async function verifyBundle(bundle) {
     const rows = JSON.parse(body);
     if (!Array.isArray(rows) || rows.length !== entry.rows) fail(`Row-count mismatch for ${table}`);
     for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) fail(`Invalid row in ${table}`);
       const unexpected = Object.keys(row).filter((column) => !TABLES[table].includes(column));
       if (unexpected.length) fail(`Unexpected columns in ${table}: ${unexpected.join(", ")}`);
+      const missing = TABLES[table].filter((column) => !Object.hasOwn(row, column));
+      if (missing.length) fail(`Missing columns in ${table}: ${missing.join(", ")}`);
     }
   }
   for (const asset of manifest.assets || []) {
@@ -290,7 +296,7 @@ function storageUrl(supabaseUrl, key, authenticated = false) {
 }
 
 async function storageRequest(url, serviceRoleKey, options = {}) {
-  const response = await fetch(url, { ...options, headers: { authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey, ...(options.headers || {}) } });
+  const response = await fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(REMOTE_OPERATION_TIMEOUT_MS), headers: { authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey, ...(options.headers || {}) } });
   if (!response.ok) fail(`Storage request failed (${response.status})`);
   return response;
 }
@@ -299,7 +305,7 @@ export async function exportHostedBundle({ output, workspaceId, connectionString
   const tenant = assertWorkspaceId(workspaceId);
   if (!connectionString || !supabaseUrl || !serviceRoleKey) fail("SUPABASE_DB_URL, SUPABASE_URL, and SUPABASE_SERVICE_ROLE_KEY are required for hosted export");
   const bundleDir = await createBundleDirectory(output);
-  const client = new Client({ connectionString, ssl: connectionString.includes("localhost") ? undefined : { rejectUnauthorized: false } });
+  const client = new Client(postgresClientConfig(connectionString));
   const tableManifest = {};
   const tableRows = {};
   await client.connect();
@@ -351,7 +357,7 @@ export async function importBundle({ bundle, connectionString, supabaseUrl, serv
   const { directory, manifest } = await verifyBundle(bundle);
   if (!assetsOnly) {
     if (!connectionString) fail("SUPABASE_DB_URL is required for database import");
-    const client = new Client({ connectionString, ssl: connectionString.includes("localhost") ? undefined : { rejectUnauthorized: false } });
+    const client = new Client(postgresClientConfig(connectionString));
     await client.connect();
     try {
       await client.query("BEGIN");
@@ -394,7 +400,7 @@ export async function importBundle({ bundle, connectionString, supabaseUrl, serv
 export async function verifyHosted({ bundle, connectionString, supabaseUrl, serviceRoleKey }) {
   const { directory, manifest } = await verifyBundle(bundle);
   if (!connectionString || !supabaseUrl || !serviceRoleKey) fail("SUPABASE_DB_URL, SUPABASE_URL, and SUPABASE_SERVICE_ROLE_KEY are required");
-  const client = new Client({ connectionString, ssl: connectionString.includes("localhost") ? undefined : { rejectUnauthorized: false } });
+  const client = new Client(postgresClientConfig(connectionString));
   await client.connect();
   try { await verifyTargetCounts(client, manifest); } finally { await client.end(); }
   for (const asset of manifest.assets) {

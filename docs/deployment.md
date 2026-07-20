@@ -39,13 +39,22 @@ FORMA_AUTH_MODE=required
 FORMA_AUTH_PROVIDERS=email,google,azure
 FORMA_DATA_BACKEND=supabase
 FORMA_RATE_LIMIT_PER_MINUTE=300
+FORMA_RATE_LIMIT_REDIS_URL=https://your-database.upstash.io
+FORMA_RATE_LIMIT_REDIS_TOKEN=...
+FORMA_RATE_LIMIT_KEY_SECRET=...
 FORMA_REQUEST_LOGS=true
 FORMA_METRICS_SECRET=...
 FORMA_ERROR_WEBHOOK_URL=https://monitoring.example.com/forma-errors
 FORMA_ERROR_WEBHOOK_SECRET=...
+FORMA_MALWARE_SCAN_URL=https://scanner.yourdomain.com/v1/scan
+FORMA_MALWARE_SCAN_SECRET=...
 ```
 
 Important: Vercel function storage is ephemeral. Hosted mode does not depend on it: business records use Supabase Postgres and uploads use the private `forma-private` bucket. SQLite mode still requires a persistent volume and must not be used as a production database on Vercel.
+
+Production uploads fail closed unless the HTTPS malware scanner and its Bearer secret are configured. Forma validates file type/signature and size first, sends the bytes plus their SHA-256 digest to the scanner, and writes neither object nor metadata until the scanner returns `clean: true`. Scanner outages return `503`; detected content returns `422`. The scanner may echo `sha256` and, when present, Forma verifies it before accepting the result.
+
+Production readiness also requires an Upstash-compatible Redis REST endpoint. Each limiter increment and expiry is one atomic Lua operation shared across application instances; IP addresses are HMAC-pseudonymized before leaving the process. A short Redis outage falls back to the bounded in-process limiter and emits `X-Forma-RateLimit-Fallback: memory`, while `/api/ready` prevents a production deployment with no distributed configuration from becoming ready.
 
 ## Supabase
 

@@ -14,8 +14,9 @@ Deploy migrations before application code that depends on them. Take a database 
 - Set `FORMA_METRICS_SECRET` and scrape `GET /api/internal/metrics` with a Bearer token. The Prometheus text export contains status-family counts, aggregate/average latency, error-code counts, uptime, and heap use; it deliberately omits routes, workspace IDs, document IDs, and customer labels.
 - Optionally set `FORMA_ERROR_WEBHOOK_URL` and `FORMA_ERROR_WEBHOOK_SECRET` to send a signed, sanitized envelope for server errors. The envelope includes only service/environment, request ID, method, route template, status, code, and timestamp. Production accepts only HTTPS sinks.
 - Alert on readiness failures, HTTP 5xx rate, webhook 4xx/5xx responses, scheduled-operation failures, email bounce/complaint growth, unmatched provider events, and payment reconciliation mismatches.
+- Alert on malware-scanner unavailability or digest mismatches. Production readiness fails when the scanner is absent, and no logo or attachment is persisted before a clean verdict.
 
-The built-in limiter protects a single Node process. Production should also enforce per-IP and per-route limits at the CDN/WAF because in-memory counters are not shared between serverless instances.
+The application limiter uses an Upstash-compatible Redis REST endpoint in production and applies atomic fixed-window counters across instances. Identities are HMAC-pseudonymized, the local fallback is capped at 10,000 active buckets, and fallback responses carry `X-Forma-RateLimit-Fallback: memory`. Keep CDN/WAF limits as the outer abuse boundary and alert on fallback headers or Redis PING failures.
 
 ## Scheduled work
 

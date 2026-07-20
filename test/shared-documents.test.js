@@ -228,7 +228,8 @@ test("quick-create parser recognises conjunction-separated items, VAT, receipts,
 
 test("generic APIs render all template/page/type combinations and mock sends are idempotent", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "moneyfy-api-shared-"));
-  const app = createApp({ database: path.join(dir, "test.sqlite"), uploadDir: path.join(dir, "uploads") }); const server = app.listen(0, "127.0.0.1"); await new Promise((resolve) => server.once("listening", resolve));
+  const scans = [];
+  const app = createApp({ database: path.join(dir, "test.sqlite"), uploadDir: path.join(dir, "uploads"), malwareOptions: { scanFile: async (input) => { scans.push(input); return { clean: true, scanned: true }; } } }); const server = app.listen(0, "127.0.0.1"); await new Promise((resolve) => server.once("listening", resolve));
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
     for (const type of ["invoice", "quote", "receipt"]) for (const template of ["classic", "minimal", "bold", "executive", "compact"]) for (const page_size of ["A4", "LETTER"]) {
@@ -332,6 +333,7 @@ test("generic APIs render all template/page/type combinations and mock sends are
     response = await fetch(`${base}/api/documents/${attachmentDocument.id}/attachments`, { method: "POST", headers: { "Content-Type": "application/pdf", "X-File-Name": "scope.pdf" }, body: Buffer.from("%PDF-1.7\nattachment") });
     assert.equal(response.status, 201); const attachmentUpload = (await response.json()).data;
     assert.equal(attachmentUpload.document.data.attachments.length, 1);
+    assert.deepEqual(scans.map((scan) => [scan.kind, scan.filename, scan.contentType]), [["business_logo", "forma.png", "image/png"], ["document_attachment", "scope.pdf", "application/pdf"]]);
     const uploadedAttachment = attachmentUpload.attachment;
     response = await fetch(`${base}${uploadedAttachment.url}`); assert.equal(response.status, 200); assert.equal(response.headers.get("content-type"), "application/pdf");
     response = await fetch(`${base}/api/documents/${attachmentDocument.id}/attachments/${uploadedAttachment.asset_id}`, { method: "DELETE" });

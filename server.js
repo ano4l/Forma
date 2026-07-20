@@ -15,6 +15,8 @@ import { capturePayPalOrder, createHostedPayment, createProviderRefund, paymentE
 import { resendEventDetails, verifyResendWebhook } from "./webhook-provider.js";
 import { createObservability } from "./observability.js";
 import { agingCsv, agingReport, collectionForecast, collectionForecastCsv, renderReceivablesReportPdf, taxCsv, taxReport } from "./reporting.js";
+import { malwareScannerStatus, scanUpload } from "./malware-scanner.js";
+import { createRateLimiter } from "./rate-limiter.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BRAND_LOGO = "VKT-logo.png";
@@ -52,8 +54,9 @@ function attachmentInfo(buffer, contentType) {
   return imageInfo(buffer, contentType);
 }
 
-export function createApp({ database = process.env.FORMA_DB || process.env.MONEYFY_DB || path.join(root, "moneyfy.sqlite"), uploadDir = process.env.FORMA_UPLOAD_DIR || process.env.MONEYFY_UPLOAD_DIR || path.join(root, "uploads"), staticRoot = root, dataBackend = process.env.FORMA_DATA_BACKEND || "sqlite", authOptions = {} } = {}) {
+export function createApp({ database = process.env.FORMA_DB || process.env.MONEYFY_DB || path.join(root, "moneyfy.sqlite"), uploadDir = process.env.FORMA_UPLOAD_DIR || process.env.MONEYFY_UPLOAD_DIR || path.join(root, "uploads"), staticRoot = root, dataBackend = process.env.FORMA_DATA_BACKEND || "sqlite", authOptions = {}, malwareOptions = {} } = {}) {
   const app = express();
+  const fetchImpl = authOptions.fetchImpl || globalThis.fetch;
   const observability = createObservability({ fetchImpl: authOptions.fetchImpl || globalThis.fetch });
   if (process.env.NODE_ENV === "production") app.set("trust proxy", 1);
   const tenantContext = new AsyncLocalStorage();
@@ -62,12 +65,14 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   app.locals.store = store;
   const route = (handler) => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
   const publicUrlFor = (req) => { const configured = String(process.env.FORMA_PUBLIC_URL || "").trim(); if (!configured) { if (process.env.NODE_ENV === "production") throw Object.assign(new Error("FORMA_PUBLIC_URL must be configured in production"), { status: 503, code: "PUBLIC_URL_NOT_CONFIGURED" }); return `${req.protocol}://${req.get("host")}`; } let url; try { url = new URL(configured); } catch { throw Object.assign(new Error("FORMA_PUBLIC_URL is invalid"), { status: 503, code: "PUBLIC_URL_NOT_CONFIGURED" }); } if (!['http:', 'https:'].includes(url.protocol) || (process.env.NODE_ENV === "production" && url.protocol !== 'https:')) throw Object.assign(new Error("FORMA_PUBLIC_URL must use HTTPS in production"), { status: 503, code: "PUBLIC_URL_NOT_CONFIGURED" }); return url.origin; };
-  const rateWindows = new Map();
-  const rateLimit = ({ name, limit, windowMs = 60000 }) => (req, res, next) => { const key = `${name}:${req.ip}`; const timestamp = Date.now(); let entry = rateWindows.get(key); if (!entry || entry.resetAt <= timestamp) entry = { count: 0, resetAt: timestamp + windowMs }; entry.count += 1; rateWindows.set(key, entry); if (rateWindows.size > 10000) for (const [candidate, value] of rateWindows) if (value.resetAt <= timestamp) rateWindows.delete(candidate); res.set("RateLimit-Limit", String(limit)).set("RateLimit-Remaining", String(Math.max(0, limit - entry.count))).set("RateLimit-Reset", String(Math.ceil(entry.resetAt / 1000))); if (entry.count > limit) return res.status(429).set("Retry-After", String(Math.ceil((entry.resetAt - timestamp) / 1000))).json({ error: { code: "RATE_LIMITED", message: "Too many requests; try again shortly" } }); return next(); };
+  const rateLimiter = createRateLimiter({ environment: process.env, fetchImpl });
+  const rateLimit = rateLimiter.middleware;
   app.use((req, res, next) => { const requestId = String(req.get("x-request-id") || randomUUID()).slice(0, 128); req.requestId = requestId; res.set("X-Request-Id", requestId).set("X-Content-Type-Options", "nosniff").set("X-Frame-Options", "DENY").set("Referrer-Policy", "strict-origin-when-cross-origin").set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()").set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"); if (process.env.NODE_ENV === "production") res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains"); if (req.path.startsWith("/api/")) res.set("Cache-Control", "no-store"); const startedAt = performance.now(); res.on("finish", () => { const duration = performance.now() - startedAt; observability.recordRequest(res.statusCode, duration); if (process.env.NODE_ENV === "production" || process.env.FORMA_REQUEST_LOGS === "true") console.log(JSON.stringify({ level: "info", event: "http_request", request_id: requestId, method: req.method, path: req.route?.path || req.path, status: res.statusCode, duration_ms: Math.round(duration * 10) / 10, workspace_id: req.auth?.workspaceId || null, user_id: req.auth?.user?.id || null })); }); next(); });
   app.use(rateLimit({ name: "api", limit: Number(process.env.FORMA_RATE_LIMIT_PER_MINUTE) || 300 }));
   const authMiddleware = createAuthMiddleware({ config: authOptions.config || resolveAuthConfig(), fetchImpl: authOptions.fetchImpl || globalThis.fetch });
-  const fetchImpl = authOptions.fetchImpl || globalThis.fetch;
+  const malwareEnvironment = malwareOptions.environment || process.env;
+  const malwareStatus = malwareScannerStatus(malwareEnvironment);
+  const scanFile = malwareOptions.scanFile || ((input) => scanUpload(input, { environment: malwareEnvironment, fetchImpl: malwareOptions.fetchImpl || fetchImpl }));
   const serviceFetch = authMiddleware.config.serviceRoleKey ? (apiPath, options = {}) => fetchImpl(`${authMiddleware.config.url}${apiPath}`, { ...options, headers: { apikey: authMiddleware.config.serviceRoleKey, Authorization: `Bearer ${authMiddleware.config.serviceRoleKey}`, ...(options.headers || {}) } }) : null;
   const serviceRpc = async (name, body) => { if (!serviceFetch) throw Object.assign(new Error("The server-only Supabase mutation key is not configured"), { status: 503, code: "TENANT_STORE_NOT_CONFIGURED" }); const response = await serviceFetch(`/rest/v1/rpc/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const payload = await response.json().catch(() => null); if (!response.ok) throw Object.assign(new Error(payload?.message || "Provider event could not be reconciled"), { status: response.status, code: "PROVIDER_RECONCILIATION_FAILED" }); return payload; };
   const processPaymentEvent = async (provider, details) => normalizedBackend === "supabase" ? serviceRpc("process_payment_provider_event", { target_provider: provider, target_event_id: details.eventId, target_event_type: details.type, target_checkout_id: details.checkoutId || null, target_provider_checkout_id: details.providerCheckoutId || null, target_provider_payment_id: details.providerPaymentId || null, target_amount: details.amountMinor, target_currency: details.currency, target_success: details.successful, target_failed: details.failed, target_payload: details.raw }) : store.processPaymentWebhook(provider, details);
@@ -150,8 +155,8 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   const cronAuthorized = (req) => { const configured = String(process.env.FORMA_CRON_SECRET || ""); const supplied = String(req.get("x-forma-cron-secret") || req.get("authorization")?.replace(/^Bearer\s+/i, "") || ""); const a = Buffer.from(configured); const b = Buffer.from(supplied); return configured && a.length === b.length && timingSafeEqual(a, b); };
 
   const secretAuthorized = (req, name) => { const configured = String(process.env[name] || ""); const supplied = String(req.get("authorization")?.replace(/^Bearer\s+/i, "") || ""); const a = Buffer.from(configured); const b = Buffer.from(supplied); return configured && a.length === b.length && timingSafeEqual(a, b); };
-  app.get("/api/health", async (req, res) => res.json({ ok: true, email: emailProviderStatus(), payments: paymentProviderStatus(), auth: { mode: authMiddleware.publicConfig.mode, configured: authMiddleware.publicConfig.configured }, observability: { error_sink_configured: observability.configured, metrics_configured: Boolean(process.env.FORMA_METRICS_SECRET) }, data_backend: normalizedBackend }));
-  app.get("/api/ready", route(async (req, res) => { if (normalizedBackend === "supabase") { if (!serviceFetch) throw Object.assign(new Error("Hosted data service is not configured"), { status: 503, code: "NOT_READY" }); const check = await serviceFetch("/rest/v1/workspaces?select=id&limit=1"); if (!check.ok) throw Object.assign(new Error("Hosted data service is unavailable"), { status: 503, code: "NOT_READY" }); } else store.db.prepare("SELECT 1 AS ready").get(); res.json({ ready: true, data_backend: normalizedBackend }); }));
+  app.get("/api/health", async (req, res) => res.json({ ok: true, email: emailProviderStatus(), payments: paymentProviderStatus(), malware_scanning: malwareStatus, rate_limiting: rateLimiter.status, auth: { mode: authMiddleware.publicConfig.mode, configured: authMiddleware.publicConfig.configured }, observability: { error_sink_configured: observability.configured, metrics_configured: Boolean(process.env.FORMA_METRICS_SECRET) }, data_backend: normalizedBackend }));
+  app.get("/api/ready", route(async (req, res) => { if (malwareStatus.required && !malwareStatus.configured) throw Object.assign(new Error("Malware scanning is not configured"), { status: 503, code: "NOT_READY" }); if (rateLimiter.status.required && !rateLimiter.status.configured) throw Object.assign(new Error("Distributed rate limiting is not configured"), { status: 503, code: "NOT_READY" }); if (normalizedBackend === "supabase") { if (!serviceFetch) throw Object.assign(new Error("Hosted data service is not configured"), { status: 503, code: "NOT_READY" }); const check = await serviceFetch("/rest/v1/workspaces?select=id&limit=1"); if (!check.ok) throw Object.assign(new Error("Hosted data service is unavailable"), { status: 503, code: "NOT_READY" }); } else store.db.prepare("SELECT 1 AS ready").get(); res.json({ ready: true, data_backend: normalizedBackend }); }));
   app.get("/api/internal/metrics", rateLimit({ name: "metrics", limit: 30 }), (req, res) => { if (!process.env.FORMA_METRICS_SECRET) return res.status(503).json({ error: { code: "METRICS_NOT_CONFIGURED", message: "Metrics export is not configured" } }); if (!secretAuthorized(req, "FORMA_METRICS_SECRET")) return res.status(401).json({ error: { code: "INVALID_METRICS_CREDENTIAL", message: "Invalid metrics credential" } }); res.type("text/plain; version=0.0.4").send(observability.prometheus()); });
   app.get("/api/auth/config", async (req, res) => res.json({ data: authMiddleware.publicConfig }));
   app.post("/api/internal/run-operations", rateLimit({ name: "operations", limit: 10 }), route(async (req, res) => {
@@ -192,11 +197,13 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
 
   app.post("/api/business-logo", express.raw({ type: ["image/png", "image/jpeg", "image/webp", "image/svg+xml"], limit: MAX_LOGO_BYTES }), route(async (req, res) => {
     const info = imageInfo(req.body, req.get("content-type")?.split(";")[0].trim().toLowerCase());
+    const filename = safeFilename(req.get("x-file-name"));
+    await scanFile({ content: req.body, filename, contentType: info.contentType, kind: "business_logo" });
     const id = randomUUID(); const storageKey = hostedStorage ? path.posix.join(req.auth.workspaceId, "logos", `${id}.${info.extension}`) : path.posix.join("logos", `${id}.${info.extension}`); const pendingAsset = { storage_key: storageKey, content_type: info.contentType };
     await writeAsset(pendingAsset, req.body);
     let savedAsset = null;
     try {
-      savedAsset = await store.saveMediaAsset({ id, storage_key: storageKey, filename: safeFilename(req.get("x-file-name")), content_type: info.contentType, byte_size: req.body.length });
+      savedAsset = await store.saveMediaAsset({ id, storage_key: storageKey, filename, content_type: info.contentType, byte_size: req.body.length });
       const profile = await store.saveBusinessProfile({ ...await store.getBusinessProfile(), logo_url: `/api/assets/${savedAsset.id}` });
       res.status(201).json({ data: { asset: { ...savedAsset, url: `/api/assets/${savedAsset.id}` }, profile } });
     } catch (cause) { if (savedAsset) await Promise.resolve(store.deleteMediaAsset(savedAsset.id)).catch(() => null); await removeAsset(pendingAsset); throw cause; }
@@ -282,11 +289,13 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   app.post("/api/documents/:id/attachments", express.raw({ type: ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/svg+xml"], limit: MAX_ATTACHMENT_BYTES }), route(async (req, res) => {
     const document = found(await store.getDocument(req.params.id, { sensitive: true })); if (document.status !== "draft") throw Object.assign(new Error("Attachments can only be changed on drafts"), { status: 409, code: "CONFLICT" });
     const info = attachmentInfo(req.body, req.get("content-type")?.split(";")[0].trim().toLowerCase());
+    const filename = safeFilename(req.get("x-file-name") || `attachment.${info.extension}`);
+    await scanFile({ content: req.body, filename, contentType: info.contentType, kind: "document_attachment" });
     const id = randomUUID(); const storageKey = hostedStorage ? path.posix.join(req.auth.workspaceId, "documents", document.id, `${id}.${info.extension}`) : path.posix.join("documents", document.id, `${id}.${info.extension}`); const pendingAsset = { storage_key: storageKey, content_type: info.contentType };
     await writeAsset(pendingAsset, req.body);
     let savedAsset = null;
     try {
-      savedAsset = await store.saveMediaAsset({ id, storage_key: storageKey, filename: safeFilename(req.get("x-file-name") || `attachment.${info.extension}`), content_type: info.contentType, byte_size: req.body.length });
+      savedAsset = await store.saveMediaAsset({ id, storage_key: storageKey, filename, content_type: info.contentType, byte_size: req.body.length });
       const attachment = { asset_id: savedAsset.id, name: savedAsset.filename, content_type: savedAsset.content_type, byte_size: savedAsset.byte_size, url: `/api/assets/${savedAsset.id}`, added_at: savedAsset.created_at };
       const updated = await store.updateDocument(document.id, { ...document.data, attachments: [...(document.data.attachments || []), attachment] });
       res.status(201).json({ data: { document: updated, attachment } });
