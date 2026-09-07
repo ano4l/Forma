@@ -1,6 +1,6 @@
 # Forma implementation progress
 
-Last updated: 2026-07-20
+Last updated: 2026-09-07 (PWA rebased onto the 2026-07-20 hosted-production line)
 
 ## Current milestone
 
@@ -77,6 +77,13 @@ The second figure is deliberately lower: authentication, tenant isolation, real 
 - Secure customer portal: issued documents create revocable 1-90 day opaque links whose SHA-256 digest is the only stored secret. The dedicated responsive portal removes the fragment secret from the address bar, sends it only in a header, exposes sanitized immutable document data and PDF download, shows existing provider-hosted payment options, and lets a customer accept or decline a sent quote exactly once.
 - Hosted team administration: owners/admins can list members and pending invitations, invite admin/member/viewer roles, revoke invitations, and update member role/status with last-owner and ownership boundaries. Seven-day invitation secrets are stored only as hashes, bound to the invited Supabase Auth email, delivered through the configured provider, and accepted before a workspace is selected.
 
+### Installable PWA and personal-use hosting
+
+- Full PWA support: `manifest.webmanifest` (standalone display, shortcuts, maskable icons), versioned service worker (`sw.js`) with precached shell, network-first API reads, stale-while-revalidate static assets, cache-first web fonts, offline shell fallback, and automatic once-per-update reload. Writes are never intercepted.
+- iPhone-ready: `apple-mobile-web-app-capable` standalone tags, `apple-touch-icon`, brand theme color, `viewport-fit=cover` plus safe-area-aware CSS for notched devices, and Add-to-Home-Screen support without App Store distribution.
+- Generated anti-aliased brand icon set (180/192/512/maskable) via a dependency-free PNG rasterizer (`npm run icons`).
+- Service worker and manifest are served with `no-cache`; icons are immutable-cached; the server binds to loopback by default and supports `HOST=0.0.0.0` for LAN access from a phone, with `.env.local` loading via the standard npm start script.
+
 ## Partially complete
 
 - Business logos use the local upload directory in SQLite mode and private tenant-scoped Supabase Storage in hosted mode. Production malware scanning and safe image normalization are implemented and fail-closed; live scanner deployment/configuration remains.
@@ -106,6 +113,7 @@ $env:PORT='4175'; npm start
 ```
 
 Latest verified result (2026-07-20): `59` automated tests passed, `0` failed. `npm run build` passed syntax checks for every runtime and operations module. The production dependency audit found `0` vulnerabilities, and all seven hosted SQL migrations parse successfully. Auth coverage proves fail-closed configuration, authentic-user and membership resolution, workspace-spoof rejection, refusal to expose SQLite through required-auth mode, hosted-store activation only after tenant resolution, workspace creation/invitation RPC forwarding, session persistence and refresh, confirmation-required sign-up, OAuth callback capture, and logout. Adapter coverage proves explicit workspace filters and write payloads, private object-path enforcement, viewer read behavior, and server-only hosted route activation. Provider coverage proves atomic/idempotent payment/refund reconciliation, over-refund rejection, dispute normalization, Resend state/suppression handling, raw-body signature verification, PayPal OAuth/order/refund amount conversion, and provider idempotency headers. Portal coverage proves secret hashing, sanitized retrieval, valid PDF output, invalid-token rejection, and one-time quote response. Reporting/runtime coverage proves aging and collection buckets, per-rate tax totals, CSV formula neutralization, readiness, security headers, protected metrics, signed sanitized error export, and raw-provider-payload redaction. Data-operations coverage proves tenant binding, private-object checksums/copies, strict remote PostgreSQL TLS, exact bundle schemas, tamper detection, secret-free release reporting, and fail-closed production defaults. Upload-security coverage proves production scanner fail-closed behavior, clean/detected/digest-mismatch handling, and that rejected files never reach object or metadata storage. Image coverage proves metadata-free WebP/SVG-to-PNG normalization, vector-source rendering in generated PDFs, external-resource SVG rejection, and corrupt-image handling. Rate-limit coverage proves bounded fallback state, request rejection/reset behavior, atomic Redis commands, IP pseudonymization, and controlled fallback. The live production gate currently passes public Supabase URL/key reachability and email Auth only; it reports explicit blockers for the absent server/database/provider/deployment/Redis/scanner configuration.
+Latest verified result addition (2026-09-07): the PWA milestone rebased onto this line adds manifest/service-worker/icon serving and installable-shell coverage (`test/pwa.test.js`), with the service worker and icon generator included in the `npm run build` syntax gate.
 
 Live local verification was completed at `http://127.0.0.1:4179`:
 

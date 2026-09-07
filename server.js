@@ -364,7 +364,15 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
   app.get("/api/invoices/:id/audit", route(async (req, res) => { found(await store.getInvoice(req.params.id), "Invoice"); res.json({ data: await store.listAudit(req.params.id) }); }));
   app.get("/api/invoices/:id/pdf", route(async (req, res) => { const document = found(await store.getInvoice(req.params.id), "Invoice"); createDocumentPdf(document, res, { logo: await pdfLogoFor(document) }); }));
 
-  app.use(express.static(staticRoot, { extensions: ["html"] }));
+  // PWA entry points must always be revalidated so updates to the shell and worker are picked up.
+  app.get("/sw.js", (req, res) => res.type("application/javascript; charset=utf-8").set("Cache-Control", "no-cache, must-revalidate").set("Service-Worker-Allowed", "/").sendFile(path.join(staticRoot, "sw.js")));
+  app.get("/manifest.webmanifest", (req, res) => res.type("application/manifest+json; charset=utf-8").set("Cache-Control", "no-cache, must-revalidate").sendFile(path.join(staticRoot, "manifest.webmanifest")));
+  app.use(express.static(staticRoot, {
+    extensions: ["html"],
+    setHeaders: (res, filePath) => {
+      if (filePath.replaceAll("\\", "/").includes("/icons/")) res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
+    }
+  }));
   app.get("/{*splat}", async (req, res) => res.sendFile(path.join(staticRoot, "index.html")));
   app.use((cause, req, res, next) => { if (res.headersSent) return next(cause); const status = cause.status || 500; const code = cause.code || (status === 500 ? "INTERNAL_ERROR" : "REQUEST_ERROR"); observability.recordError(code, status); if (status >= 500) void observability.notifyError({ request_id: req.requestId, method: req.method, route: req.route?.path, status, code }); if (status >= 500 || process.env.FORMA_LOG_ERRORS === "true") console.error(JSON.stringify({ level: "error", event: "request_error", request_id: req.requestId, method: req.method, path: req.path, status, code, message: cause.message, stack: process.env.NODE_ENV === "production" ? undefined : cause.stack })); res.status(status).json({ error: { code, message: status === 500 ? "Something went wrong" : cause.message, details: cause.details, request_id: req.requestId } }); });
   return app;
@@ -372,7 +380,7 @@ export function createApp({ database = process.env.FORMA_DB || process.env.MONEY
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 4173; const host = process.env.HOST || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1"); const app = createApp();
-  const server = app.listen(port, host, () => console.log(`VirtuKey Forma running at http://${host}:${port}`));
+  const server = app.listen(port, host, () => console.log(`VirtuKey Forma running at http://${host}:${port}${host === "0.0.0.0" ? " (LAN-enabled no-auth local mode)" : ""}`));
   const shutdown = (signal) => { console.log(JSON.stringify({ level: "info", event: "shutdown", signal })); server.close(() => { app.locals.store.close(); process.exit(0); }); setTimeout(() => process.exit(1), 10000).unref(); };
   process.once("SIGTERM", () => shutdown("SIGTERM")); process.once("SIGINT", () => shutdown("SIGINT"));
 }

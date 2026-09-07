@@ -1,6 +1,16 @@
 # Forma deployment stack
 
-This app is a Node/Express document workspace with a local SQLite store by default. The repository is configured for Vercel previews, Supabase as the hosted Postgres target, Resend transactional email, and a later Railway cutover for a persistent Node runtime.
+Forma is a Node/Express document workspace with a local SQLite store by default, shipped as an installable PWA. The repository is configured for Vercel hosting, Supabase as the hosted Postgres target, Resend transactional email, and a later Railway cutover for a persistent Node runtime.
+
+## PWA and iPhone install
+
+The app ships `manifest.webmanifest`, a root-scoped service worker (`sw.js`), generated brand icons under `icons/`, and iOS standalone-mode meta tags.
+
+- Offline behavior: the app shell, branding, and fonts are cached on first load. API reads are network-first with a last-known-data fallback, so the workspace still opens offline. Writes always go to the network and will surface the app's normal error UI when offline.
+- Updates: the worker versions its caches per release; a new deployment replaces old caches and the running app reloads once to pick it up.
+- iPhone install: open the deployed HTTPS URL (or `http://<your-lan-ip>:4173` when running locally) in Safari, tap Share, then "Add to Home Screen". The installed app runs full-screen without Safari chrome and does not require App Store distribution. On iOS, standalone mode requires this manual step; there is no browser install prompt.
+- Regenerate icons after a rebrand with `npm run icons`.
+- Note: Safari on the local network only treats the LAN address as a secure context for service workers in some setups; if the worker does not register over plain HTTP on iPhone, the app still works - it just won't cache offline. For reliable offline use on iPhone, use the HTTPS Vercel deployment.
 
 ## Vercel
 
@@ -50,7 +60,7 @@ FORMA_MALWARE_SCAN_URL=https://scanner.yourdomain.com/v1/scan
 FORMA_MALWARE_SCAN_SECRET=...
 ```
 
-Important: Vercel function storage is ephemeral. Hosted mode does not depend on it: business records use Supabase Postgres and uploads use the private `forma-private` bucket. SQLite mode still requires a persistent volume and must not be used as a production database on Vercel.
+Important: Vercel function storage is ephemeral. Hosted mode does not depend on it: business records use Supabase Postgres and uploads use the private `forma-private` bucket. SQLite mode still requires a persistent volume and must not be used as a production database on Vercel. For durable daily personal use while running locally, back up `moneyfy.sqlite` (plus `uploads/`) regularly.
 
 Production uploads fail closed unless the HTTPS malware scanner and its Bearer secret are configured. Forma validates file type/signature and size first, sends the bytes plus their SHA-256 digest to the scanner, and writes neither object nor metadata until the scanner returns `clean: true`. Scanner outages return `503`; detected content returns `422`. The scanner may echo `sha256` and, when present, Forma verifies it before accepting the result. Business logos are then auto-oriented, bounded to 1600×1600, stripped of source metadata, and stored as PNG so PNG/JPEG/WebP/SVG sources render consistently in the browser and PDFKit output. SVG inputs reject scripts, event handlers, embedded documents/images, external references, stylesheets, doctypes, and entities before rasterization.
 

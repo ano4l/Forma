@@ -413,3 +413,27 @@
   display: flex !important;
   align-items: center !important;
 }
+
+/* Installed-PWA polish: respect iPhone safe areas and viewport-fit=cover. */
+.sidebar {
+  padding-top: calc(20px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+}
+@media (max-width: 900px) {
+  .main { min-height: 100dvh; }
+  .topbar {
+    height: auto;
+    min-height: 60px;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .mobile-totalbar {
+    height: auto;
+    min-height: 72px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .page { padding-bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
+  .sheet-panel { padding-bottom: env(safe-area-inset-bottom, 0px); }
+}
+@media all and (display-mode: standalone) {
+  .api-status { display: none; }
+}

@@ -1181,3 +1181,19 @@ window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") { closeSheet(); if ($("#modal").open) $("#modal").close(); }
 });
 initializeApplication();
+
+if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname))) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").then((registration) => {
+      registration.addEventListener("updatefound", () => {
+        const worker = registration.installing;
+        if (worker) worker.addEventListener("statechange", () => {
+          if (worker.state === "installed" && navigator.serviceWorker.controller && !sessionStorage.getItem("sw-updated")) {
+            sessionStorage.setItem("sw-updated", "1");
+            location.reload();
+          }
+        });
+      });
+    }).catch(() => {});
+  });
+}
